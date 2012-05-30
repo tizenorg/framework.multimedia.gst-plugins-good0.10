@@ -5,6 +5,7 @@ Release:    1
 Group:      TO_BE/FILLED_IN
 License:    LGPLv2+
 Source0:    %{name}-%{version}.tar.gz
+Source1001: packaging/gst-plugins-good.manifest 
 Patch0 :    gst-plugins-good-disable-gtk-doc.patch
 BuildRequires:  gettext-tools
 BuildRequires:  which
@@ -38,6 +39,7 @@ of good-quality plug-ins under the LGPL license.
 %patch0 -p1
 
 %build
+cp %{SOURCE1001} .
 ./autogen.sh 
 %configure  --disable-static \
 	--prefix=%{_prefix} \
@@ -104,6 +106,7 @@ rm -rf %{buildroot}
 
 
 %files
+%manifest gst-plugins-good.manifest
 %defattr(-,root,root,-)
 %{_libdir}/gstreamer-0.10
 %{_libdir}/gstreamer-0.10/libgstavi.so

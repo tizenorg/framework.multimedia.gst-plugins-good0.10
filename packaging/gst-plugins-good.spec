@@ -1,8 +1,8 @@
 #sbs-git:slp/pkgs/g/gst-plugins-good0.10 gst-plugins-good 0.10.31 6e8625ba6fe94fb9d09e6c3be220b54ffaa01273
 Name:       gst-plugins-good
 Summary:    GStreamer plugins from the "good" set
-Version:    0.10.33
-Release:    95
+Version:    0.10.34
+Release:    127
 Group:      Applications/Multimedia
 License:    LGPLv2+
 Source0:    %{name}-%{version}.tar.gz
@@ -12,11 +12,7 @@ Source0:    %{name}-%{version}.tar.gz
 #Patch3 :    gst-plugins-good-mkv-demux.patch
 #Patch4 :    gst-plugins-good-parse-frame.patch
 #Patch5 :    gst-plugins-good-qtdemux.patch
-%if 0%{?tizen_profile_mobile}
-Patch6 :    gst-plugins-good-disable-gtk-doc-mobile.patch
-%else
-Patch6 :    gst-plugins-good-disable-gtk-doc-wearable.patch
-%endif
+Patch6 :    gst-plugins-good-disable-gtk-doc.patch
 BuildRequires:  gettext
 BuildRequires:  which
 BuildRequires:  gst-plugins-base-devel  
@@ -30,9 +26,11 @@ BuildRequires:  pkgconfig(x11)
 BuildRequires:  pkgconfig(xfixes)
 BuildRequires:  pkgconfig(xdamage)
 BuildRequires:  pkgconfig(xext)
-%if "%{_repository}" == "mobile"
-BuildRequires:  pkgconfig(drm-client)
-%endif
+BuildRequires:  pkgconfig(vconf)
+BuildRequires:  pkgconfig(iniparser)
+#BuildRequires:  pkgconfig(drm-client)
+#BuildRequires:  pkgconfig(drm-trusted)
+#BuildRequires:	pkgconfig(libdrm)
 
 %description
 GStreamer is a streaming media framework, based on graphs of filters
@@ -55,35 +53,18 @@ of good-quality plug-ins under the LGPL license.
 #%patch5 -p1
 %patch6 -p1
 
-
 %build
-%if 0%{?tizen_profile_mobile}
-cd mobile
-%else
-cd wearable
-%endif
-
 ./autogen.sh
-%if 0%{?tizen_profile_mobile}
-export CFLAGS+=" -Wall -g -fPIC\
- -DGST_EXT_SOUP_MODIFICATION \
- -DGST_EXT_RTSPSRC_MODIFICATION \
- -DGST_EXT_AMRPARSER_MODIFICATION \
- -DGST_EXT_AACPARSER_MODIFICATION \
- -D_GST_EXT_DISABLE_DCAPARSE_ \
- -DGST_EXT_MPEGAUDIO_MODIFICATION"
-%else
+
 export CFLAGS+=" -Wall -g -fPIC\
  -DGST_EXT_SOUP_MODIFICATION \
  -DGST_EXT_RTSPSRC_MODIFICATION \
  -DGST_EXT_AMRPARSER_MODIFICATION \
  -DGST_EXT_AACPARSER_MODIFICATION \
  -DGST_EXT_SS_TYPE \
- -DGST_EXT_MPEGAUDIO_MODIFICATION\
- -D_LITEW_OPT_"
-%endif
+ -DGST_EXT_MPEGAUDIO_MODIFICATION \
+ -DGST_EXT_ENHANCEMENT"
 
-%if 0%{?tizen_profile_mobile}
 %configure --prefix=%{_prefix}\
  --disable-static\
 %ifarch %{arm}
@@ -135,140 +116,48 @@ export CFLAGS+=" -Wall -g -fPIC\
  --disable-shout2test\
  --disable-speex\
  --disable-taglib
-%else
-%configure --prefix=%{_prefix}\
- --disable-static\
-%ifarch %{arm}
- --enable-divx-drm\
-%endif
- --disable-nls\
- --with-html-dir=/tmp/dump\
- --disable-examples\
- --disable-gconftool\
- --disable-alpha\
- --disable-apetag\
- --disable-audiofx\
- --disable-auparse\
- --disable-cutter\
- --disable-debugutils\
- --disable-deinterlace\
- --disable-effectv\
- --disable-equalizer\
- --disable-icydemux\
- --disable-flx\
- --disable-goom\
- --disable-goom2k1\
- --disable-level\
- --disable-monoscope\
- --disable-replaygain\
- --disable-smpte\
- --disable-spectrum\
- --disable-videobox\
- --disable-videomixer\
- --disable-y4m\
- --disable-directsound\
- --disable-oss\
- --disable-sunaudio\
- --disable-osx_audio\
- --disable-osx_video\
- --disable-aalib\
- --disable-aalibtest\
- --disable-annodex\
- --disable-cairo\
- --disable-esd\
- --disable-esdtest\
- --disable-flac\
- --disable-gconf\
- --disable-hal\
- --disable-libcaca\
- --disable-libdv\
- --disable-dv1394\
- --disable-shout2\
- --disable-speex\
- --disable-taglib\
- --disable-avi\
- --disable-flv\
- --disable-imagefreeze\
- --disable-law\
- --disable-matroska\
- --disable-multifile\
- --disable-rtp\
- --disable-rtpmanager\
- --disable-rtsp\
- --disable-shapewipe\
- --disable-udp\
- --disable-videocrop\
- --disable-wavenc\
- --disable-oss4\
- --disable-x\
- --disable-xshm\
- --disable-xvideo\
- --disable-cairo_gobject\
- --disable-gdk_pixbuf\
- --disable-jack\
- --disable-jpeg\
- --disable-libpng\
- --disable-pulse\
- --disable-taglib\
- --disable-wavpack\
- --disable-zlib\
- --disable-bz2
-%endif
 
 
 make %{?jobs:-j%jobs}
 
 %install
 rm -rf %{buildroot}
-%if 0%{?tizen_profile_mobile}
-cd mobile
-%else
-cd wearable
-%endif
-
 mkdir -p %{buildroot}/usr/share/license
 cp COPYING %{buildroot}/usr/share/license/%{name}
-
 %make_install
 
 
 
 
 %files
-%if 0%{?tizen_profile_mobile}
-%manifest mobile/gst-plugins-good.manifest
-%else
-%manifest wearable/gst-plugins-good.manifest
-%endif
+%manifest gst-plugins-good.manifest
 %defattr(-,root,root,-)
 %{_libdir}/gstreamer-0.10
-%{_libdir}/gstreamer-0.10/libgstisomp4.so
-%{_libdir}/gstreamer-0.10/libgstid3demux.so
-%{_libdir}/gstreamer-0.10/libgstaudioparsers.so
-%{_libdir}/gstreamer-0.10/libgstautodetect.so
-%{_libdir}/gstreamer-0.10/libgstvideofilter.so
-%{_libdir}/gstreamer-0.10/libgstwavparse.so
-%{_libdir}/gstreamer-0.10/libgstvideo4linux2.so
-%{_libdir}/gstreamer-0.10/libgstsouphttpsrc.so
-%if 0%{?tizen_profile_mobile}
 %{_libdir}/gstreamer-0.10/libgstavi.so
+%{_libdir}/gstreamer-0.10/libgstflv.so
+%{_libdir}/gstreamer-0.10/libgstmatroska.so
 %{_libdir}/gstreamer-0.10/libgstrtsp.so
+%{_libdir}/gstreamer-0.10/libgstisomp4.so
 %{_libdir}/gstreamer-0.10/libgstvideocrop.so
+%{_libdir}/gstreamer-0.10/libgstid3demux.so
 %{_libdir}/gstreamer-0.10/libgstpulse.so
 %{_libdir}/gstreamer-0.10/libgstmultifile.so
 %{_libdir}/gstreamer-0.10/libgstpng.so
-%{_libdir}/gstreamer-0.10/libgstflv.so
 %{_libdir}/gstreamer-0.10/libgstudp.so
 %{_libdir}/gstreamer-0.10/libgstximagesrc.so
 %{_libdir}/gstreamer-0.10/libgstalaw.so
 %{_libdir}/gstreamer-0.10/libgstrtpmanager.so
+%{_libdir}/gstreamer-0.10/libgstaudioparsers.so
 %{_libdir}/gstreamer-0.10/libgstimagefreeze.so
 %{_libdir}/gstreamer-0.10/libgstjpeg.so
-%{_libdir}/gstreamer-0.10/libgstmatroska.so
+%{_libdir}/gstreamer-0.10/libgstautodetect.so
+%{_libdir}/gstreamer-0.10/libgstvideofilter.so
 %{_libdir}/gstreamer-0.10/libgstmulaw.so
 %{_libdir}/gstreamer-0.10/libgstrtp.so
+%{_libdir}/gstreamer-0.10/libgstwavparse.so
 %{_libdir}/gstreamer-0.10/libgstwavenc.so
+%{_libdir}/gstreamer-0.10/libgstvideo4linux2.so
 %{_libdir}/gstreamer-0.10/libgstshapewipe.so
 %{_libdir}/gstreamer-0.10/libgstoss4audio.so
-%endif
+%{_libdir}/gstreamer-0.10/libgstsouphttpsrc.so
 /usr/share/license/%{name}

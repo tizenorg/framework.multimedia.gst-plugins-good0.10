@@ -69,7 +69,7 @@ static const gint block_size_wb[16] =
 /* AMR has a "hardcoded" framerate of 50fps */
 #define AMR_FRAMES_PER_SECOND 50
 #define AMR_FRAME_DURATION (GST_SECOND/AMR_FRAMES_PER_SECOND)
-#define AMR_MIME_HEADER_SIZE 9
+#define AMR_MIME_HEADER_SIZE 6
 
 static gboolean gst_amr_parse_start (GstBaseParse * parse);
 static gboolean gst_amr_parse_stop (GstBaseParse * parse);
@@ -83,6 +83,11 @@ static gboolean gst_amr_parse_check_valid_frame (GstBaseParse * parse,
 
 static GstFlowReturn gst_amr_parse_parse_frame (GstBaseParse * parse,
     GstBaseParseFrame * frame);
+
+#ifdef GST_EXT_AMRPARSER_MODIFICATION /* make full amr index table when seek */
+  #define AMR_MAX_PULL_RANGE_BUF (5 * 1024 * 1024) /* 5 mbyte */
+  static gboolean gst_amr_parse_src_eventfunc (GstBaseParse * parse, GstEvent * event);
+#endif
 
 #define _do_init(bla) \
     GST_DEBUG_CATEGORY_INIT (amrparse_debug, "amrparse", 0, \
@@ -129,6 +134,10 @@ gst_amr_parse_class_init (GstAmrParseClass * klass)
   parse_class->parse_frame = GST_DEBUG_FUNCPTR (gst_amr_parse_parse_frame);
   parse_class->check_valid_frame =
       GST_DEBUG_FUNCPTR (gst_amr_parse_check_valid_frame);
+
+#ifdef GST_EXT_AMRPARSER_MODIFICATION /* make full amr index table when seek */
+  parse_class->src_event = gst_amr_parse_src_eventfunc;
+#endif
 }
 
 
@@ -213,7 +222,11 @@ gst_amr_parse_sink_setcaps (GstBaseParse * parse, GstCaps * caps)
     return FALSE;
   }
 
-  amrparse->need_header = FALSE;
+#ifdef GST_EXT_AMRPARSER_MODIFICATION
+  if (amrparse->pad_mode != GST_ACTIVATE_PULL)
+    amrparse->need_header = FALSE;
+#endif
+
   gst_base_parse_set_frame_rate (GST_BASE_PARSE (amrparse), 50, 1, 2, 2);
   gst_amr_parse_set_src_caps (amrparse);
   return TRUE;
@@ -236,17 +249,24 @@ gst_amr_parse_parse_header (GstAmrParse * amrparse,
   GST_DEBUG_OBJECT (amrparse, "Parsing header data");
 
   if (!memcmp (data, "#!AMR-WB\n", 9)) {
-    GST_DEBUG_OBJECT (amrparse, "AMR-WB detected");
+    GST_WARNING_OBJECT (amrparse, "AMR-WB detected");
     amrparse->block_size = block_size_wb;
     amrparse->wide = TRUE;
     *skipsize = amrparse->header = 9;
   } else if (!memcmp (data, "#!AMR\n", 6)) {
-    GST_DEBUG_OBJECT (amrparse, "AMR-NB detected");
+    GST_WARNING_OBJECT (amrparse, "AMR-NB detected");
     amrparse->block_size = block_size_nb;
     amrparse->wide = FALSE;
     *skipsize = amrparse->header = 6;
+#ifdef GST_EXT_AMRPARSER_MODIFICATION
+  } else {
+    GST_ERROR_OBJECT (amrparse, "AMR HEADER don't detected");
+    return FALSE;
+  }
+#else
   } else
     return FALSE;
+#endif
 
   gst_amr_parse_set_src_caps (amrparse);
   return TRUE;
@@ -288,6 +308,15 @@ gst_amr_parse_check_valid_frame (GstBaseParse * parse,
       gst_base_parse_set_frame_rate (GST_BASE_PARSE (amrparse), 50, 1, 2, 2);
     } else {
       GST_WARNING ("media doesn't look like a AMR format");
+#ifdef GST_EXT_AMRPARSER_MODIFICATION
+      if (amrparse->pad_mode == GST_ACTIVATE_PULL) {
+        amrparse->need_header = FALSE;
+        *framesize = 0;
+        *skipsize = -2;
+        GST_ERROR_OBJECT (amrparse, "Invalid AMR Header Format");
+        return FALSE;
+      }
+#endif
     }
     /* We return FALSE, so this frame won't get pushed forward. Instead,
        the "skip" value is set, so next time we will receive a valid frame. */
@@ -299,6 +328,31 @@ gst_amr_parse_check_valid_frame (GstBaseParse * parse,
     /* Yep. Retrieve the frame size */
     mode = (data[0] >> 3) & 0x0F;
     fsize = amrparse->block_size[mode] + 1;     /* +1 for the header byte */
+
+#ifdef GST_EXT_AMRPARSER_MODIFICATION
+    if (amrparse->pad_mode == GST_ACTIVATE_PULL) {
+      if (amrparse->sync_check) {
+        GST_DEBUG_OBJECT (amrparse, "AMR Next sync check : fsize (%d)", fsize);
+        amrparse->sync_check = FALSE;
+        if ((fsize > 0) && ((data[fsize] & 0x83) == 0)) {
+          gint next_fsize,next_mode;
+          next_mode = (data[fsize] >> 3) & 0x0F;
+          next_fsize = amrparse->block_size[next_mode] + 1;
+          if(fsize != next_fsize) {
+            *framesize = 0;
+            *skipsize = -2;
+            GST_ERROR_OBJECT (amrparse, "Invalid mode bit");
+            return FALSE;
+          }
+        } else {
+          *framesize = 0;
+          *skipsize = -2;
+          GST_ERROR_OBJECT (amrparse, "Invalid mode bit");
+          return FALSE;
+        }
+      }
+    }
+#endif
 
     /* We recognize this data as a valid frame when:
      *     - We are in sync. There is no need for extra checks then
@@ -370,6 +424,16 @@ gst_amr_parse_start (GstBaseParse * parse)
   GST_DEBUG ("start");
   amrparse->need_header = TRUE;
   amrparse->header = 0;
+#ifdef GST_EXT_AMRPARSER_MODIFICATION
+  amrparse->sync_check = TRUE;
+  gst_base_parse_get_pad_mode(parse, &amrparse->pad_mode);
+  if (amrparse->pad_mode == GST_ACTIVATE_PULL) {
+    GST_WARNING_OBJECT (amrparse, "pad_mode : GST_ACTIVATE_PULL MODE.");
+  } else if (amrparse->pad_mode == GST_ACTIVATE_PUSH) {
+    GST_WARNING_OBJECT (amrparse, " pad_mode : GST_ACTIVATE_PUSH MODE.");
+  } else
+    GST_WARNING_OBJECT (amrparse, "pad_mode : GST_ACTIVATE_NONE MODE.");
+#endif
   return TRUE;
 }
 
@@ -429,3 +493,190 @@ gst_amr_parse_sink_getcaps (GstBaseParse * parse)
 
   return res;
 }
+
+
+#ifdef GST_EXT_AMRPARSER_MODIFICATION /* make full amr index table when seek */
+/**
+ * gst_amr_parse_src_eventfunc:
+ * @parse: #GstBaseParse. #event
+ *
+ * before baseparse handles seek event, make full amr index table.
+ *
+ * Returns: TRUE on success.
+ */
+static gboolean
+gst_amr_parse_src_eventfunc (GstBaseParse * parse, GstEvent * event)
+{
+  gboolean handled = FALSE;
+  GstAmrParse *amrparse;
+  amrparse = GST_AMR_PARSE (parse);
+
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_SEEK:
+      {
+        GstFlowReturn res = GST_FLOW_OK;
+        gint64 base_offset = 0, sync_offset = 0, cur = 0;
+        gint32 frame_count = 1; /* do not add first frame because it is already in index table */
+        gint64 total_file_size = 0, start_offset = 0;
+        GstClockTime current_ts = GST_CLOCK_TIME_NONE;
+        GstActivateMode pad_mode = GST_ACTIVATE_NONE;
+
+#ifdef GST_EXT_BASEPARSER_MODIFICATION /* check baseparse define these fuction */
+        gst_base_parse_get_pad_mode(parse, &pad_mode);
+        if (pad_mode != GST_ACTIVATE_PULL) {
+          GST_INFO_OBJECT (amrparse, "arm parser is not pull mode. amr parser can not make index table.");
+          return FALSE;
+        }
+        gst_base_parse_get_upstream_size(parse, &total_file_size);
+        gst_base_parse_get_index_last_offset(parse, &start_offset);
+        gst_base_parse_get_index_last_ts(parse, &current_ts);
+#else
+        GST_WARNING_OBJECT (amrparse, "baseparser does not define get private param functions. can not make index table here.");
+        break;
+#endif
+
+        GST_LOG_OBJECT (amrparse, "gst_amr_parse_src_eventfunc GST_EVENT_SEEK enter");
+
+        if (total_file_size == 0 || start_offset >= total_file_size) {
+          GST_ERROR("last index offset %d is larger than file size %d", start_offset, total_file_size);
+          break;
+        }
+
+        gst_event_parse_seek (event, NULL, NULL, NULL, NULL, &cur, NULL, NULL);
+        if (cur <= current_ts) {
+          GST_INFO_OBJECT (amrparse, "seek to %"GST_TIME_FORMAT" within index table %"GST_TIME_FORMAT". do not make index table",
+              GST_TIME_ARGS(cur), GST_TIME_ARGS(current_ts));
+          break;
+        } else {
+          GST_INFO_OBJECT (amrparse, "seek to %"GST_TIME_FORMAT" without index table %"GST_TIME_FORMAT". make index table",
+              GST_TIME_ARGS(cur), GST_TIME_ARGS(current_ts));
+        }
+
+        GST_INFO_OBJECT (amrparse, "make AMR Index Table. file_size  = %"G_GINT64_FORMAT" last idx offset=%"G_GINT64_FORMAT
+            ", last idx ts=%"GST_TIME_FORMAT, total_file_size, start_offset, GST_TIME_ARGS(current_ts));
+
+        base_offset = start_offset; /* set base by start offset */
+
+
+        /************************************/
+        /* STEP 1: MAX_PULL_RANGE_BUF cycle */
+        /************************************/
+        while (total_file_size - base_offset >= AMR_MAX_PULL_RANGE_BUF) {
+          gint64 offset = 0;
+          GstBuffer *buffer = NULL;
+          guint8 *buf = NULL;
+
+         GST_INFO_OBJECT (amrparse, "gst_pad_pull_range %d bytes (from %"G_GINT64_FORMAT") use max size", AMR_MAX_PULL_RANGE_BUF, base_offset);
+          res = gst_pad_pull_range (parse->sinkpad, base_offset,
+              base_offset + AMR_MAX_PULL_RANGE_BUF, &buffer);
+          if (res != GST_FLOW_OK) {
+            GST_ERROR_OBJECT (amrparse, "gst_pad_pull_range failed!");
+            break;
+          }
+
+          buf = GST_BUFFER_DATA(buffer);
+          if (buf == NULL) {
+            GST_WARNING("buffer is NULL in make amr seek table's STEP1");
+            gst_buffer_unref (buffer);
+            goto amr_seek_null_exit;
+          }
+
+          while (offset <= AMR_MAX_PULL_RANGE_BUF) {
+            gint mode = 0,  frame_size = 0;
+
+            if ((buf[offset] & 0x83) == 0) {
+              mode = (buf[offset] >> 3) & 0x0F;
+              frame_size = amrparse->block_size[mode] + 1; /* +1 for the header byte */
+              if (frame_size < 13) {
+                GST_WARNING_OBJECT (amrparse, "frame_size is Invalid (%d) - seek event END at offset %"G_GINT64_FORMAT"", frame_size, base_offset + offset);
+                break;
+              }
+
+              if (frame_count % 50 == 0) { /* 1 sec == 50 frames. we make idx per sec */
+                gst_base_parse_add_index_entry (parse, base_offset +offset, current_ts, TRUE, TRUE); /* force */
+                GST_DEBUG_OBJECT (amrparse, "Adding  index ts=%"GST_TIME_FORMAT" offset %"G_GINT64_FORMAT,
+                    GST_TIME_ARGS(current_ts), base_offset + offset);
+              }
+
+              current_ts += 20 * 1000 * 1000; /* each frame is 20ms */
+              offset += frame_size;
+              frame_count++;
+            } else {
+              GST_WARNING_OBJECT (amrparse, "we lost sync");
+              offset++;
+            }
+          } /* while */
+        base_offset = base_offset + offset;
+        gst_buffer_unref (buffer);
+        } /* end MAX buffer cycle */
+
+
+        /*******************************/
+        /* STEP 2: Remain Buffer cycle */
+        /*******************************/
+        if (total_file_size - base_offset > 0) {
+          gint64 offset = 0;
+          GstBuffer *buffer = NULL;
+          guint8 *buf = NULL;
+
+          GST_INFO_OBJECT (amrparse, "gst_pad_pull_range %"G_GINT64_FORMAT" bytes (from %"G_GINT64_FORMAT") use remain_buf size",
+              total_file_size - base_offset, base_offset);
+          res = gst_pad_pull_range (parse->sinkpad, base_offset,
+              total_file_size, &buffer);
+          if (res != GST_FLOW_OK) {
+            GST_ERROR ("gst_pad_pull_range failed!");
+            break;
+          }
+
+          buf = GST_BUFFER_DATA(buffer);
+          if (buf == NULL) {
+             GST_WARNING("buffer is NULL in make amr seek table's STEP2");
+             gst_buffer_unref (buffer);
+             goto amr_seek_null_exit;
+           }
+
+          while (base_offset + offset < total_file_size) {
+            gint mode = 0, frame_size = 0;
+
+            if ((buf[offset] & 0x83) == 0) {
+              mode = (buf[offset] >> 3) & 0x0F;
+              frame_size = amrparse->block_size[mode] + 1; /* +1 for the header byte */
+              if (frame_size < 13) {
+                GST_WARNING_OBJECT (amrparse, "frame_size is Invalid (%d) - seek event END at offset %"G_GINT64_FORMAT"", frame_size, base_offset + offset);
+                break;
+              }
+
+              if (frame_count % 50 == 0) { /* 1 sec == 50 frames. we make idx per sec */
+                gst_base_parse_add_index_entry (parse, base_offset +offset, current_ts, TRUE, TRUE); /* force */
+                GST_DEBUG_OBJECT (amrparse, "Adding  index ts=%"GST_TIME_FORMAT" offset %"G_GINT64_FORMAT,
+                    GST_TIME_ARGS(current_ts), base_offset + offset);
+              }
+
+              current_ts += 20 * 1000 * 1000; /* each frame is 20ms */
+              offset += frame_size;
+              frame_count++;
+            } else {
+              GST_WARNING_OBJECT (amrparse, "we lost sync");
+              offset++;
+            }
+          } /* while */
+
+        gst_buffer_unref (buffer);
+        } /* end remain_buf buffer cycle */
+
+        GST_LOG_OBJECT (amrparse, "gst_amr_parse_src_eventfunc GST_EVENT_SEEK leave");
+      }
+     break;
+
+    default:
+      break;
+  }
+
+amr_seek_null_exit:
+
+  /* call baseparse src_event function to handle event */
+  handled = GST_BASE_PARSE_CLASS (parent_class)->src_event (parse, event);
+
+  return handled;
+}
+#endif

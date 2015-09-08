@@ -960,6 +960,7 @@ gst_multiudpsink_init_send (GstMultiUDPSink * sink)
   }
 
   len = sizeof (sndsize);
+#if 0 //WFD Wifi Device socket size issue, kernel 3.4.5 patch (sendto() performance -to use default buffer size
   if (sink->buffer_size != 0) {
     sndsize = sink->buffer_size;
 
@@ -976,7 +977,7 @@ gst_multiudpsink_init_send (GstMultiUDPSink * sink)
               sndsize, ret, g_strerror (errno), errno));
     }
   }
-
+#endif
   /* read the value of the receive buffer. Note that on linux this returns 2x the
    * value we set because the kernel allocates extra memory for metadata.
    * The default on Linux is about 100K (which is about 50K without metadata) */

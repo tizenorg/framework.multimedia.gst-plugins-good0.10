@@ -757,7 +757,7 @@ gst_wavparse_time_to_bytepos (GstWavParse * wav, gint64 ts, gint64 * bytepos)
     return TRUE;
   }
 
-  if (wav->bps > 0) {
+  if (wav->bps > 0 && !(wav->fact)) {		/* bug fix */
     *bytepos = uint64_ceiling_scale (ts, (guint64) wav->bps, GST_SECOND);
     return TRUE;
   } else if (wav->fact) {
@@ -1122,7 +1122,7 @@ gst_wavparse_calculate_duration (GstWavParse * wav)
   if (wav->duration > 0)
     return TRUE;
 
-  if (wav->bps > 0) {
+  if (wav->bps > 0 && !(wav->fact)) {		/* bug fix */
     GST_INFO_OBJECT (wav, "Got datasize %" G_GUINT64_FORMAT, wav->datasize);
     wav->duration =
         uint64_ceiling_scale (wav->datasize, GST_SECOND, (guint64) wav->bps);
@@ -1268,8 +1268,38 @@ gst_wavparse_stream_headers (GstWavParse * wav)
         break;
       }
       case GST_RIFF_WAVE_FORMAT_PCM:
+#ifdef WAVPARSER_MODIFICATION
+        /* This spec-out case occurs in certain product.
+          * So, we added code such as lower part. */
+        if (wav->blockalign > wav->channels * (guint) ceil (wav->depth / 8.0)) {
+          guint32 tmp_bps = (wav->rate * wav->depth * wav->channels) / 8;
+          if (wav->av_bps == (tmp_bps * 8) ) {
+            GST_WARNING_OBJECT (wav, "invalid_blockalign : worng blockalign = %u, bps = %u", (guint) wav->blockalign, wav->av_bps);
+            GST_WARNING_OBJECT (wav, "must update caps for spec-out case ");
+            wav->blockalign = wav->channels * (guint) ceil (wav->depth / 8.0);
+            if (wav->channels > 0)
+              wav->width = (wav->blockalign * 8) / wav->channels;
+            else
+              goto no_channels;
+            wav->av_bps =  wav->rate * wav->blockalign * wav->channels;
+            wav->bps = wav->av_bps;
+            caps = gst_caps_new_simple ("audio/x-raw-int",
+              "endianness", G_TYPE_INT, G_LITTLE_ENDIAN,
+              "channels", G_TYPE_INT, wav->channels,
+              "width", G_TYPE_INT, wav->width,
+              "depth", G_TYPE_INT, (guint) wav->depth,
+              "signed", G_TYPE_BOOLEAN, wav->width != 8,
+              "rate", G_TYPE_INT, wav->rate,
+              NULL);
+            break;
+          } else {
+            goto invalid_blockalign;
+          }
+        }
+#else
         if (wav->blockalign > wav->channels * (guint) ceil (wav->depth / 8.0))
           goto invalid_blockalign;
+#endif
         /* fall through */
       default:
         if (wav->av_bps > wav->blockalign * wav->rate)
@@ -1284,6 +1314,13 @@ gst_wavparse_stream_headers (GstWavParse * wav)
 
     if (wav->bytes_per_sample <= 0)
       goto no_bytes_per_sample;
+
+#ifdef WAVPARSER_MODIFICATION
+    if (wav->depth > 32 || wav->width > 32) {
+      GST_WARNING_OBJECT (wav, " invalid_bitresolution : depths (%d) width (%d)", wav->depth, wav->width);
+     goto invalid_bitresolution;
+    }
+#endif
 
     GST_DEBUG_OBJECT (wav, "blockalign = %u", (guint) wav->blockalign);
     GST_DEBUG_OBJECT (wav, "width      = %u", (guint) wav->width);
@@ -1678,6 +1715,14 @@ header_read_error:
         ("Couldn't read in header %d (%s)", res, gst_flow_get_name (res)));
     goto fail;
   }
+#ifdef WAVPARSER_MODIFICATION
+invalid_bitresolution :
+  {
+    GST_ELEMENT_ERROR (wav, STREAM, DEMUX, (NULL),
+        ("Not support higher than 32 bit resolution"));
+    goto fail;
+  }
+#endif
 }
 
 /*
@@ -1937,7 +1982,7 @@ iterate_adapter:
     }
   }
 
-  if (wav->bps > 0) {
+  if (wav->bps > 0 && !(wav->fact)) {		/* bug fix */
     /* and timestamps if we have a bitrate, be careful for overflows */
     timestamp = uint64_ceiling_scale (pos, GST_SECOND, (guint64) wav->bps);
     next_timestamp =
@@ -2234,7 +2279,11 @@ gst_wavparse_sink_event (GstPad * pad, GstEvent * event)
           guint64 bps = wav->bps;
 
           /* operating in format TIME, so we can convert */
+#if 0     /* original */
           if (!bps && wav->fact)
+#else     /* bug fix */
+					if (wav->fact)
+#endif
             bps =
                 gst_util_uint64_scale_int (wav->datasize, wav->rate, wav->fact);
           if (bps) {
@@ -2357,7 +2406,7 @@ gst_wavparse_pad_convert (GstPad * pad,
           GST_INFO_OBJECT (wavparse,
               "src=%" G_GINT64_FORMAT ", offset=%" G_GINT64_FORMAT, src_value,
               wavparse->offset);
-          if (wavparse->bps > 0)
+          if (wavparse->bps > 0 && !(wavparse->fact))		/* bug fix */
             *dest_value = uint64_ceiling_scale (src_value, GST_SECOND,
                 (guint64) wavparse->bps);
           else if (wavparse->fact) {
@@ -2393,7 +2442,7 @@ gst_wavparse_pad_convert (GstPad * pad,
     case GST_FORMAT_TIME:
       switch (*dest_format) {
         case GST_FORMAT_BYTES:
-          if (wavparse->bps > 0)
+          if (wavparse->bps > 0  && !(wavparse->fact))		/* bug fix */
             *dest_value = gst_util_uint64_scale (src_value,
                 (guint64) wavparse->bps, GST_SECOND);
           else {

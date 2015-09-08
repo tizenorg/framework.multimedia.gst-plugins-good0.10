@@ -38,6 +38,19 @@ G_BEGIN_DECLS
 #define GST_IS_AAC_PARSE_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_AAC_PARSE))
 
+typedef enum
+{
+    DECAAC_RET_SUCCESS           = 0,
+    DECAAC_RET_ERR_NOT_SUFF_MEM  = -2,
+    DECAAC_RET_ERR_NOT_SUPPORT   = -3,
+    DECAAC_RET_ERR_INVALID_ARG   = -4,
+    DECAAC_RET_ERR_INVALID_BS    = -5,
+    DECAAC_RET_ERR_NOT_EXPECTED  = -8,
+    DECAAC_RET_ERR_NOT_SUFF_BS   = -9,
+    DECAAC_RET_ERR_BAD_CRC       = -10,
+    DECAAC_RET_ERR_INVALID_HCB   = -11,
+    DECAAC_RET_ERR_UNKNOWN       = -0xFF,
+} eDECAACRET;
 
 /**
  * GstAacHeaderType:
@@ -77,6 +90,20 @@ struct _GstAacParse {
   gint           mpegversion;
   gint           frame_samples;
 
+#ifdef GST_EXT_AACPARSER_MODIFICATION
+  gboolean   first_frame; /* estimate duration once at the first time */
+
+  guint           hdr_bitrate;    /* added - estimated bitrate (bps) */
+  guint           spf;            /* added - samples per frame = frame_samples */
+  guint           frame_duration; /* added - duration per frame (msec) */
+  guint           frame_per_sec; /* added - frames per second (ea) */
+  guint           bitstream_type; /* added- bitstream type - constant or variable */ //evil
+  guint           adif_header_length;
+  guint           num_program_config_elements;
+  guint           read_bytes;
+  gint64         file_size;
+  guint           frame_byte;
+#endif
   GstAacHeaderType header_type;
 };
 

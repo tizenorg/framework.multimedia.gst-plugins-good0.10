@@ -17,7 +17,7 @@
  *
  * This plugin reads data from a remote location specified by a URI.
  * Supported protocols are 'http', 'https'.
- * 
+ *
  * An HTTP proxy must be specified by its URL.
  * If the "http_proxy" environment variable is set, its value is used.
  * If built with libsoup's GNOME integration features, the GNOME proxy
@@ -87,6 +87,7 @@
 #include <gst/tag/tag.h>
 
 #define SEEK_CHANGES
+
 GST_DEBUG_CATEGORY_STATIC (souphttpsrc_debug);
 #define GST_CAT_DEFAULT souphttpsrc_debug
 
@@ -114,15 +115,29 @@ enum
   PROP_IRADIO_URL,
   PROP_IRADIO_TITLE,
   PROP_TIMEOUT,
+#ifdef GST_EXT_SOUP_MODIFICATION
+  PROP_CONTENT_SIZE,
+  PROP_AHS_STREAMING,
+#endif
 #ifdef SEEK_CHANGES
   PROP_EXTRA_HEADERS,
-  PROP_BLOCKSIZE,
+  PROP_RANGESIZE,
 #else
-  PROP_EXTRA_HEADERS
+  PROP_EXTRA_HEADERS,
 #endif
+  PROP_SOUPCOOKIES
 };
 
-#define DEFAULT_USER_AGENT           "GStreamer souphttpsrc "
+#define DEFAULT_USER_AGENT           "Gstreamer souphttpsrc "
+
+#ifdef GST_EXT_SOUP_MODIFICATION
+#define DEFAULT_RETRY_TIMEOUT -1
+#define DEFAULT_SESSION_TIMEOUT 20
+#define MIN_SESSION_TIMEOUT 5
+
+#define DLNA_OP_TIMED_SEEK  0x02
+#define DLNA_OP_BYTE_SEEK   0x01
+#endif
 
 static void gst_soup_http_src_uri_handler_init (gpointer g_iface,
     gpointer iface_data);
@@ -142,6 +157,10 @@ static gboolean gst_soup_http_src_is_seekable (GstBaseSrc * bsrc);
 static gboolean gst_soup_http_src_do_seek (GstBaseSrc * bsrc,
     GstSegment * segment);
 static gboolean gst_soup_http_src_query (GstBaseSrc * bsrc, GstQuery * query);
+#ifdef USE_SAMSUNG_LINK
+static gboolean gst_soup_http_src_event (GstBaseSrc * bsrc, GstEvent *event);
+#endif
+
 static gboolean gst_soup_http_src_unlock (GstBaseSrc * bsrc);
 static gboolean gst_soup_http_src_unlock_stop (GstBaseSrc * bsrc);
 static gboolean gst_soup_http_src_set_location (GstSoupHTTPSrc * src,
@@ -152,8 +171,13 @@ static char *gst_soup_http_src_unicodify (const char *str);
 static gboolean gst_soup_http_src_build_message (GstSoupHTTPSrc * src);
 static void gst_soup_http_src_cancel_message (GstSoupHTTPSrc * src);
 static void gst_soup_http_src_queue_message (GstSoupHTTPSrc * src);
+#ifdef GST_EXT_SOUP_MODIFICATION
 static gboolean gst_soup_http_src_add_range_header (GstSoupHTTPSrc * src,
-    guint64 offset);
+    guint64 offset , gchar *range);
+#else
+static gboolean gst_soup_http_src_add_range_header (GstSoupHTTPSrc * src,
+    guint64 offset)
+#endif
 static void gst_soup_http_src_session_unpause_message (GstSoupHTTPSrc * src);
 static void gst_soup_http_src_session_pause_message (GstSoupHTTPSrc * src);
 static void gst_soup_http_src_session_close (GstSoupHTTPSrc * src);
@@ -260,26 +284,50 @@ gst_soup_http_src_class_init (GstSoupHTTPSrcClass * klass)
           "HTTP proxy URI user password for authentication", "",
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
   g_object_class_install_property (gobject_class, PROP_COOKIES,
-      g_param_spec_boxed ("cookies", "Cookies", "HTTP request cookies",
+      g_param_spec_boxed("cookies", "Cookies", "HTTP request cookies",
           G_TYPE_STRV, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+  g_object_class_install_property (gobject_class, PROP_SOUPCOOKIES,
+      g_param_spec_pointer("soupcookies", "soupcookies", "web HTTP request cookies",
+          G_PARAM_WRITABLE));
   g_object_class_install_property (gobject_class, PROP_IS_LIVE,
       g_param_spec_boolean ("is-live", "is-live", "Act like a live source",
           FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+#ifdef GST_EXT_SOUP_MODIFICATION
+  g_object_class_install_property (gobject_class, PROP_TIMEOUT,
+      g_param_spec_int ("timeout", "timeout",
+          "Value in seconds to timeout (0 = No timeout, -1 = default timeout + infinite retry).", -1,
+          G_MAXINT, -1, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+#else
   g_object_class_install_property (gobject_class, PROP_TIMEOUT,
       g_param_spec_uint ("timeout", "timeout",
           "Value in seconds to timeout a blocking I/O (0 = No timeout).", 0,
           3600, 0, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+#endif
   g_object_class_install_property (gobject_class, PROP_EXTRA_HEADERS,
       g_param_spec_boxed ("extra-headers", "Extra Headers",
           "Extra headers to append to the HTTP request",
           GST_TYPE_STRUCTURE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
 #ifdef SEEK_CHANGES
-  g_object_class_install_property (gobject_class, PROP_BLOCKSIZE,
-      g_param_spec_int64 ("blocksize", "blocksize",
+  g_object_class_install_property (gobject_class, PROP_RANGESIZE,
+      g_param_spec_int64 ("rangesize", "rangesize",
           "Size of each buffer downloaded from libsoup",
           -1, G_MAXUINT, 4096, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 #endif
+
+#ifdef GST_EXT_SOUP_MODIFICATION
+  g_object_class_install_property (gobject_class, PROP_CONTENT_SIZE,
+      g_param_spec_uint64 ("content-size", "contentsize",
+          "Total size of the content under download",
+          0, G_MAXUINT, 0, G_PARAM_READABLE | G_PARAM_STATIC_STRINGS));
+
+  g_object_class_install_property (gobject_class,
+      PROP_AHS_STREAMING,
+      g_param_spec_boolean ("ahs-streaming", "adaptive HTTP Streaming",
+          "set whether adaptive HTTP streaming(HLS/SS/DASH) or not ",
+          FALSE, G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
+#endif
+
   /* icecast stuff */
   g_object_class_install_property (gobject_class,
       PROP_IRADIO_MODE,
@@ -318,6 +366,9 @@ gst_soup_http_src_class_init (GstSoupHTTPSrcClass * klass)
   gstbasesrc_class->get_size = GST_DEBUG_FUNCPTR (gst_soup_http_src_get_size);
   gstbasesrc_class->is_seekable =
       GST_DEBUG_FUNCPTR (gst_soup_http_src_is_seekable);
+#ifdef USE_SAMSUNG_LINK
+  gstbasesrc_class->event = GST_DEBUG_FUNCPTR (gst_soup_http_src_event);
+#endif
   gstbasesrc_class->do_seek = GST_DEBUG_FUNCPTR (gst_soup_http_src_do_seek);
   gstbasesrc_class->query = GST_DEBUG_FUNCPTR (gst_soup_http_src_query);
 
@@ -334,7 +385,13 @@ gst_soup_http_src_reset (GstSoupHTTPSrc * src)
   src->read_position = 0;
   src->request_position = 0;
   src->content_size = 0;
-
+  src->have_body = FALSE;
+#ifdef GST_EXT_SOUP_MODIFICATION
+  src->content_len = 0;
+  src->timeout = DEFAULT_RETRY_TIMEOUT;
+  src->session_timeout = DEFAULT_SESSION_TIMEOUT;
+  src->op_code = 0;
+#endif
 #ifdef SEEK_CHANGES
   src->file_size = 0;
 #endif
@@ -377,6 +434,12 @@ gst_soup_http_src_init (GstSoupHTTPSrc * src, GstSoupHTTPSrcClass * g_class)
         "The proxy in the http_proxy env var (\"%s\") cannot be parsed.",
         proxy);
   }
+#ifdef GST_EXT_SOUP_MODIFICATION
+  src->is_ahs_streaming = FALSE;
+  src->cookie_jar  = NULL;
+  src->cookie_list = NULL;
+  src->op_code = 0;
+#endif
 
   gst_soup_http_src_reset (src);
 }
@@ -397,6 +460,11 @@ gst_soup_http_src_finalize (GObject * gobject)
   g_free (src->user_pw);
   g_free (src->proxy_id);
   g_free (src->proxy_pw);
+  if (src->cookie_list != NULL) {
+    g_slist_free (src->cookie_list);
+    src->cookie_list = NULL;
+  }
+
   g_strfreev (src->cookies);
 
   G_OBJECT_CLASS (parent_class)->finalize (gobject);
@@ -456,19 +524,80 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
     {
 #ifdef GST_EXT_SOUP_MODIFICATION
       char **array;
+      SoupURI *base_uri;
+
 #endif
       g_strfreev (src->cookies);
       src->cookies = g_strdupv (g_value_get_boxed (value));
 #ifdef GST_EXT_SOUP_MODIFICATION
-      if ((array = src->cookies) != NULL) {
+      if (src->cookie_jar && ((array = src->cookies) != NULL)) {
+	  	base_uri = soup_uri_new (src->location);
+        GST_INFO_OBJECT (src, "request to set cookies...");
         while (*array != NULL) {
           soup_cookie_jar_add_cookie (src->cookie_jar,
-              soup_cookie_parse (*array++, NULL));
+              soup_cookie_parse (*array++, base_uri));
         }
+        soup_uri_free (base_uri);
+      } else {
+        GST_INFO_OBJECT (src, "set cookies after session creation");
       }
 #endif
       break;
     }
+#ifdef GST_EXT_SOUP_MODIFICATION
+    case PROP_SOUPCOOKIES:
+    {
+      GSList *walk, *new_cookies;
+      SoupCookie* cookie;
+
+      new_cookies = (GSList*)g_value_get_pointer(value);
+
+      /* remove old list and alloc new */
+      if (src->cookie_list)
+      {
+        g_slist_free (src->cookie_list);
+      }
+      src->cookie_list = g_slist_alloc();
+
+      if ( new_cookies )
+      {
+        walk = new_cookies;
+
+        /* check if cookie_jar is created */
+        if ( src->cookie_jar )
+        {
+          GST_INFO_OBJECT (src, "cookie jar exist. adding it to jar");
+          for ( ; walk; walk = walk->next)
+          {
+            cookie = (SoupCookie*)walk->data;
+            if ( cookie )
+            {
+              GST_INFO_OBJECT (src, "adding cookie to jar : %s - %s",
+              cookie->name, cookie->value);
+              soup_cookie_jar_add_cookie (src->cookie_jar, cookie);
+            }
+          }
+        }
+        else
+        /* cooke jar not created yet. new cookies will be stored in temporal list
+        * and will be added to jar when start() has called */
+        {
+          GST_INFO_OBJECT (src, "cookie jar not yet created. adding to temporal list");
+          for ( ; walk; walk = walk->next )
+          {
+            src->cookie_list = g_slist_prepend(src->cookie_list,
+            soup_cookie_copy(walk->data));
+          }
+        }
+      }
+      break;
+    }
+#endif
+#ifdef GST_EXT_SOUP_MODIFICATION
+    case PROP_AHS_STREAMING:
+      src->is_ahs_streaming = g_value_get_boolean (value);
+      break;
+#endif
     case PROP_IS_LIVE:
       gst_base_src_set_live (GST_BASE_SRC (src), g_value_get_boolean (value));
       break;
@@ -493,7 +622,11 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
       src->proxy_pw = g_value_dup_string (value);
       break;
     case PROP_TIMEOUT:
+#ifdef GST_EXT_SOUP_MODIFICATION
+      src->timeout = g_value_get_int (value);
+#else
       src->timeout = g_value_get_uint (value);
+#endif
       break;
     case PROP_EXTRA_HEADERS:{
       const GstStructure *s = gst_value_get_structure (value);
@@ -505,11 +638,12 @@ gst_soup_http_src_set_property (GObject * object, guint prop_id,
       break;
     }
 #ifdef SEEK_CHANGES
-	case PROP_BLOCKSIZE:{
-	  src->range_size = g_value_get_int64 (value);
-	  break;
-	}
+    case PROP_RANGESIZE:{
+      src->range_size = g_value_get_int64 (value);
+      break;
+    }
 #endif
+
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
       break;
@@ -571,6 +705,11 @@ gst_soup_http_src_get_property (GObject * object, guint prop_id,
     case PROP_IRADIO_MODE:
       g_value_set_boolean (value, src->iradio_mode);
       break;
+#ifdef GST_EXT_SOUP_MODIFICATION
+    case PROP_AHS_STREAMING:
+      g_value_set_boolean (value, src->is_ahs_streaming);
+      break;
+#endif
     case PROP_IRADIO_NAME:
       g_value_set_string (value, src->iradio_name);
       break;
@@ -596,15 +735,24 @@ gst_soup_http_src_get_property (GObject * object, guint prop_id,
       g_value_set_string (value, src->proxy_pw);
       break;
     case PROP_TIMEOUT:
+#ifdef GST_EXT_SOUP_MODIFICATION
+      g_value_set_int (value, src->timeout);
+#else
       g_value_set_uint (value, src->timeout);
+#endif
       break;
     case PROP_EXTRA_HEADERS:
       gst_value_set_structure (value, src->extra_headers);
       break;
 #ifdef SEEK_CHANGES
-    case PROP_BLOCKSIZE:
+    case PROP_RANGESIZE:
 	  g_value_set_int64 (value, src->range_size);
 	  break;
+#endif
+#ifdef GST_EXT_SOUP_MODIFICATION
+    case PROP_CONTENT_SIZE:
+      g_value_set_uint64 (value, src->content_len);
+      break;
 #endif
     default:
       G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
@@ -636,13 +784,19 @@ gst_soup_http_src_cancel_message (GstSoupHTTPSrc * src)
 static void
 gst_soup_http_src_queue_message (GstSoupHTTPSrc * src)
 {
+
   soup_session_queue_message (src->session, src->msg,
       (SoupSessionCallback) gst_soup_http_src_response_cb, src);
   src->session_io_status = GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_QUEUED;
 }
 
+#ifdef GST_EXT_SOUP_MODIFICATION
+static gboolean
+gst_soup_http_src_add_range_header (GstSoupHTTPSrc * src, guint64 offset ,gchar *range)
+#else
 static gboolean
 gst_soup_http_src_add_range_header (GstSoupHTTPSrc * src, guint64 offset)
+#endif
 {
   gchar buf[64];
 
@@ -651,13 +805,66 @@ gst_soup_http_src_add_range_header (GstSoupHTTPSrc * src, guint64 offset)
   soup_message_headers_remove (src->msg->request_headers, "Range");
 
 #ifdef GST_EXT_SOUP_MODIFICATION
-  /* Note : Some http server could not handle Range header in the middle of playing.
-   *    Need to add Range header at first for seeking properly.
-   */
-  rc = g_snprintf (buf, sizeof (buf), "bytes=%" G_GUINT64_FORMAT "-", offset);
-  if (rc > sizeof (buf) || rc < 0)
-    return FALSE;
-  soup_message_headers_append (src->msg->request_headers, "Range", buf);
+
+  if ((range != NULL) && src->is_ahs_streaming) {
+    guint len, pos;
+    gchar *str = NULL;
+    guint64 first_byte_pos = 0, last_byte_pos = 0;
+
+    str = range +6 ;//remove 'range='
+    len = strlen(range);
+    GST_DEBUG(" mediaRange : %s", str);
+
+    /* read "-" */
+    pos = strcspn (str, "-");
+    if (pos >= len) {
+      GST_TRACE ("pos %d >= len %d", pos, len);
+      GST_WARNING ("pos >= len !");
+      return FALSE;
+    }
+    /* read first_byte_pos */
+    if (pos != 0) {
+      if (sscanf (str, "%llu", &first_byte_pos) != 1) {
+        GST_WARNING ("can not get first_byte_pos");
+        return FALSE;
+      }
+    }
+    /* read last_byte_pos */
+    if (pos < (len - 1)) {
+      if (sscanf (str + pos + 1, "%llu", &last_byte_pos) != 1) {
+        GST_WARNING ("can not get last_byte_pos");
+        return FALSE;
+      }
+    }
+
+    GST_DEBUG_OBJECT(src,"- requestRange: %" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT,
+        first_byte_pos, last_byte_pos);
+
+    rc = g_snprintf (buf, sizeof (buf), "bytes=%" G_GUINT64_FORMAT "-%" G_GUINT64_FORMAT, first_byte_pos, last_byte_pos);
+      if (rc > sizeof (buf) || rc < 0)
+          return FALSE;
+    soup_message_headers_append (src->msg->request_headers, "Range", buf);
+	}
+
+ else {
+
+  if (!src->is_ahs_streaming) {
+    /* Note : Some http server could not handle Range header in the middle of playing.
+     *    Need to add Range header at first for seeking properly.
+     */
+    rc = g_snprintf (buf, sizeof (buf), "bytes=%" G_GUINT64_FORMAT "-", offset);
+    if (rc > sizeof (buf) || rc < 0)
+      return FALSE;
+    soup_message_headers_append (src->msg->request_headers, "Range", buf);
+  } else {
+    if (offset) {
+      rc = g_snprintf (buf, sizeof (buf), "bytes=%" G_GUINT64_FORMAT "-", offset);
+      if (rc > sizeof (buf) || rc < 0)
+        return FALSE;
+      soup_message_headers_append (src->msg->request_headers, "Range", buf);
+    }
+  }
+}
 #else
   if (offset) {
     rc = g_snprintf (buf, sizeof (buf), "bytes=%" G_GUINT64_FORMAT "-", offset);
@@ -698,6 +905,33 @@ _append_extra_header (GQuark field_id, const GValue * value, gpointer user_data)
       field_content);
   soup_message_headers_append (src->msg->request_headers, field_name,
       field_content);
+#ifdef GST_EXT_SOUP_MODIFICATION
+  if (!g_ascii_strcasecmp(field_name, "Cookie")) {
+    SoupURI *uri = NULL;
+    SoupCookie *cookie_parsed = NULL;
+
+    if (strlen(field_content) > 0) {
+      gchar *tmp_field = NULL;
+
+      uri = soup_uri_new (src->location);
+
+      tmp_field = strtok (field_content, ";");
+
+      while (tmp_field != NULL) {
+        GST_DEBUG_OBJECT (src, "field_content = %s", tmp_field);
+
+        cookie_parsed = soup_cookie_parse(tmp_field, uri);
+        GST_DEBUG_OBJECT (src, "cookie parsed = %p", cookie_parsed);
+
+        if (src->cookie_jar)
+          soup_cookie_jar_add_cookie (src->cookie_jar, cookie_parsed);
+
+        tmp_field = strtok (NULL, ";");
+      }
+      soup_uri_free (uri);
+    }
+  }
+#endif
 
   g_free (field_content);
 
@@ -790,6 +1024,31 @@ gst_soup_http_src_headers_foreach (const gchar * name, const gchar * val,
     gpointer src)
 {
   GST_DEBUG_OBJECT (src, " %s: %s", name, val);
+
+#ifdef GST_EXT_SOUP_MODIFICATION
+  if (g_ascii_strcasecmp (name, "Set-Cookie") == 0)
+  {
+    if (val)
+    {
+      gboolean bret = FALSE;
+      GstStructure *s = NULL;
+      GstSoupHTTPSrc * tmp = src;
+      SoupURI *uri;
+
+      uri =  soup_uri_new (tmp->location);
+
+      /* post current bandwith & uri to application */
+      s = gst_structure_new ("cookies",
+            "updated-cookie", G_TYPE_STRING, val,
+            "updated-url", G_TYPE_STRING, tmp->location, NULL);
+      bret = gst_element_post_message (GST_ELEMENT_CAST (src), gst_message_new_element (GST_OBJECT_CAST (src), s));
+      soup_cookie_jar_set_cookie (tmp->cookie_jar,  uri, val);
+      soup_uri_free (uri);
+
+      GST_INFO_OBJECT (src, "request url [%s], posted cookies [%s] msg and returned = %d", tmp->location, val, bret);
+    }
+  }
+#endif
 }
 
 static void
@@ -805,6 +1064,11 @@ gst_soup_http_src_got_headers_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
   GHashTable *params = NULL;
 
   GST_DEBUG_OBJECT (src, "got headers:");
+
+#ifdef GST_EXT_SOUP_MODIFICATION
+  src->retry_timestamp = 0;
+#endif
+
   soup_message_headers_foreach (msg->response_headers,
       gst_soup_http_src_headers_foreach, src);
 
@@ -828,6 +1092,52 @@ gst_soup_http_src_got_headers_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
 
   src->session_io_status = GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_RUNNING;
 
+#ifdef GST_EXT_SOUP_MODIFICATION
+  if ((value =
+          soup_message_headers_get (msg->response_headers,
+              "contentFeatures.dlna.org")) != NULL) {
+    gchar **token = NULL;
+    gchar **ptr = NULL;
+
+    token = g_strsplit (value, ";", 0);
+
+    for (ptr = token ; *ptr ; ptr++)
+    {
+      if (strlen(*ptr) > 0)
+      {
+        if (strstr(g_ascii_strup(*ptr, strlen(*ptr)), "DLNA.ORG_OP") != NULL)
+        {
+          gchar *op_code = NULL;
+
+          op_code = strchr(*ptr, '=');
+          if (op_code)
+          {
+            op_code++;
+
+            src->op_code = (atoi(op_code)/10 <<1) | (atoi(op_code)%10);
+            GST_DEBUG_OBJECT (src, "dlna op code: %s (0x%X)", op_code, src->op_code);
+          }
+        }
+      }
+    }
+    g_strfreev (token);
+  }
+
+  if ((value = soup_message_headers_get (msg->response_headers, "Content-Duration")) != NULL) {
+    src->duration = atoi(value) * G_GINT64_CONSTANT (1000000);
+    GST_DEBUG_OBJECT (src, "Content Duration is %"GST_TIME_FORMAT, GST_TIME_ARGS (src->duration));
+  }
+
+#endif
+
+#ifdef USE_SAMSUNG_LINK
+  if ((value = soup_message_headers_get (msg->response_headers, "X-ASP-DURATION-TIME")) != NULL) {
+    src->is_x_asp = TRUE;
+    src->duration = atoi(value) * G_GINT64_CONSTANT (1000000);
+    GST_DEBUG_OBJECT (src, "X-ASP-DURATION-TIME is %"GST_TIME_FORMAT, GST_TIME_ARGS (src->duration));
+  }
+#endif
+
   /* Parse Content-Length. */
   if (soup_message_headers_get_encoding (msg->response_headers) ==
       SOUP_ENCODING_CONTENT_LENGTH) {
@@ -841,8 +1151,10 @@ gst_soup_http_src_got_headers_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
 #endif
       src->have_size = TRUE;
       src->seekable = TRUE;
-      GST_DEBUG_OBJECT (src, "size = %" G_GUINT64_FORMAT, src->content_size);
-
+      GST_DEBUG_OBJECT (src, "content size = %" G_GUINT64_FORMAT, src->content_size);
+#ifdef GST_EXT_SOUP_MODIFICATION
+      src->content_len = src->content_size;
+#endif
       basesrc = GST_BASE_SRC_CAST (src);
       gst_segment_set_duration (&basesrc->segment, GST_FORMAT_BYTES,
           src->content_size);
@@ -855,7 +1167,7 @@ gst_soup_http_src_got_headers_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
     if(total_length > 0)
     {
       src->file_size = total_length;
-      GST_DEBUG_OBJECT (src, "size = %" G_GUINT64_FORMAT, src->file_size);
+      GST_DEBUG_OBJECT (src, "total size = %" G_GUINT64_FORMAT, src->file_size);
       basesrc = GST_BASE_SRC_CAST (src);
       gst_segment_set_duration (&basesrc->segment, GST_FORMAT_BYTES,
           src->file_size);
@@ -865,6 +1177,27 @@ gst_soup_http_src_got_headers_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
     }
 #endif
   }
+#ifdef GST_EXT_SOUP_MODIFICATION
+  else if ((soup_message_headers_get_encoding (msg->response_headers) ==
+            SOUP_ENCODING_CHUNKED) && (src->op_code & DLNA_OP_BYTE_SEEK)) {
+    soup_message_headers_get_content_range(msg->response_headers, &start, &end, &total_length);
+    if(total_length > 0)
+    {
+      src->have_size = TRUE;
+      src->seekable = TRUE;
+
+      src->content_size = src->content_len = src->file_size = total_length;
+
+      GST_DEBUG_OBJECT (src, "total size = %" G_GUINT64_FORMAT, src->file_size);
+      basesrc = GST_BASE_SRC_CAST (src);
+      gst_segment_set_duration (&basesrc->segment, GST_FORMAT_BYTES,
+          src->file_size);
+      gst_element_post_message (GST_ELEMENT (src),
+          gst_message_new_duration (GST_OBJECT (src), GST_FORMAT_BYTES,
+              src->file_size));
+    }
+  }
+#endif
 
   /* Icecast stuff */
   tag_list = gst_tag_list_new ();
@@ -883,10 +1216,26 @@ gst_soup_http_src_got_headers_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
           "metadata-interval", G_TYPE_INT, icy_metaint, NULL);
     }
   }
+#ifdef SEEK_CHANGES
+  if ((msg->status_code == 200) && (value=soup_message_headers_get (msg->response_headers,"Accept-Ranges")) != NULL) {
+    GST_DEBUG_OBJECT (src, "Accept-ranges: %s ", value);
+    if(strstr(value,"none")!=NULL) {
+      src->seekable=FALSE;
+      GST_DEBUG_OBJECT (src, "server is not seekable");
+    }
+    else
+      src->seekable=TRUE;
+  }
+  else if(msg->status_code == 200) {
+    src->seekable=FALSE;
+    GST_DEBUG_OBJECT (src, "server is not seekable");
+  }
+#endif
   if ((value =
           soup_message_headers_get_content_type (msg->response_headers,
               &params)) != NULL) {
     GST_DEBUG_OBJECT (src, "Content-Type: %s", value);
+
     if (g_ascii_strcasecmp (value, "audio/L16") == 0) {
       gint channels = 2;
       gint rate = 44100;
@@ -964,6 +1313,12 @@ gst_soup_http_src_got_headers_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
   /* Handle HTTP errors. */
   gst_soup_http_src_parse_status (msg, src);
 
+#ifdef GST_EXT_SOUP_MODIFICATION
+  if(src->is_ahs_streaming && msg->status_code == 404){
+    GST_WARNING_OBJECT (src,"Received 404 error while HLS streaming.");
+    src->content_len = 0;
+  }
+#endif
   /* Check if Range header was respected. */
   if (src->ret == GST_FLOW_CUSTOM_ERROR &&
       src->read_position && msg->status_code != SOUP_STATUS_PARTIAL_CONTENT) {
@@ -990,9 +1345,14 @@ gst_soup_http_src_got_body_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
   }
   GST_DEBUG_OBJECT (src, "got body");
   src->ret = GST_FLOW_UNEXPECTED;
-  if (src->loop)
-    g_main_loop_quit (src->loop);
-  gst_soup_http_src_session_pause_message (src);
+  src->have_body = TRUE;
+
+  /* no need to interrupt the message here, we do it on the
+   * finished_cb anyway if needed. And getting the body might mean
+   * that the connection was hang up before finished. This happens when
+   * the pipeline is stalled for too long (long pauses during playback).
+   * Best to let it continue from here and pause because it reached the
+   * final bytes based on content_size or received an out of range error */
 }
 
 /* Finished. Signal EOS. */
@@ -1003,24 +1363,83 @@ gst_soup_http_src_finished_cb (SoupMessage * msg, GstSoupHTTPSrc * src)
     GST_DEBUG_OBJECT (src, "finished, but not for current message");
     return;
   }
-  GST_DEBUG_OBJECT (src, "finished");
+
+  GST_WARNING_OBJECT (src, "finished : %d", src->session_io_status);
   src->ret = GST_FLOW_UNEXPECTED;
   if (src->session_io_status == GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_CANCELLED) {
     /* gst_soup_http_src_cancel_message() triggered this; probably a seek
      * that occurred in the QUEUEING state; i.e. before the connection setup
      * was complete. Do nothing */
   } else if (src->session_io_status ==
-      GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_RUNNING && src->read_position > 0) {
+      GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_RUNNING && src->read_position > 0 &&
+      (src->have_size || src->read_position < src->content_size)) {
     /* The server disconnected while streaming. Reconnect and seeking to the
      * last location. */
     src->retry = TRUE;
     src->ret = GST_FLOW_CUSTOM_ERROR;
   } else if (G_UNLIKELY (src->session_io_status !=
           GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_RUNNING)) {
-    /* FIXME: reason_phrase is not translated, add proper error message */
-    GST_ELEMENT_ERROR (src, RESOURCE, NOT_FOUND,
-        ("%s", msg->reason_phrase),
-        ("libsoup status code %d", msg->status_code));
+#ifdef GST_EXT_SOUP_MODIFICATION
+    if (msg->status_code != SOUP_STATUS_OK) {
+      if ((src->read_position <= 0) || (src->timeout == 0)) {
+        /* FIXME: reason_phrase is not translated, add proper error message */
+        GST_ELEMENT_ERROR (src, RESOURCE, NOT_FOUND,
+            ("%s", msg->reason_phrase),
+            ("libsoup status code %d", msg->status_code));
+      } else {
+        GstClockTime current = 0, elapsed = 0;
+
+        GST_WARNING_OBJECT(src, "session timout:%d, timeout:%d", src->session_timeout, src->timeout);
+
+        /* Assumption : soup error will be occurred after session timeout. */
+        if (src->retry_timestamp == 0) {
+          GstClockTime retry_timestamp = 0;
+          retry_timestamp = gst_util_get_timestamp();
+          if (retry_timestamp > (src->session_timeout*GST_SECOND))
+            src->retry_timestamp = gst_util_get_timestamp() - (src->session_timeout*GST_SECOND);
+          else
+            src->retry_timestamp = 0;
+        }
+
+        current = gst_util_get_timestamp ();
+        elapsed = GST_CLOCK_DIFF (src->retry_timestamp, current);
+
+        if ((src->timeout == DEFAULT_RETRY_TIMEOUT) || (elapsed <= (src->timeout*GST_SECOND))) {
+
+          if (src->timeout != DEFAULT_RETRY_TIMEOUT) {
+            guint new_session_timeout = src->timeout - (elapsed/GST_SECOND);
+
+            if (new_session_timeout < MIN_SESSION_TIMEOUT)
+              new_session_timeout = MIN_SESSION_TIMEOUT;
+            else if (new_session_timeout > DEFAULT_SESSION_TIMEOUT)
+              new_session_timeout = DEFAULT_SESSION_TIMEOUT;
+
+            if (new_session_timeout != src->session_timeout) {
+              src->session_timeout = new_session_timeout;
+              g_object_set(src->session, SOUP_SESSION_TIMEOUT, src->session_timeout, NULL);
+            }
+          }
+
+          GST_WARNING_OBJECT(src, "retry. session timeout : %d", src->session_timeout);
+
+          src->retry = TRUE;
+          src->ret = GST_FLOW_CUSTOM_ERROR;
+        } else {
+          src->timeout = 0;
+          GST_ELEMENT_ERROR (src, RESOURCE, NOT_FOUND,
+              ("%s", msg->reason_phrase),
+              ("libsoup status code %d", msg->status_code));
+        }
+      }
+    }
+#else
+    if (msg->status_code != SOUP_STATUS_OK){
+      /* FIXME: reason_phrase is not translated, add proper error message */
+      GST_ELEMENT_ERROR (src, RESOURCE, NOT_FOUND,
+          ("%s", msg->reason_phrase),
+          ("libsoup status code %d", msg->status_code));
+    }
+#endif
   }
   if (src->loop)
     g_main_loop_quit (src->loop);
@@ -1103,6 +1522,8 @@ gst_soup_http_src_got_chunk_cb (SoupMessage * msg, SoupBuffer * chunk,
     GST_DEBUG_OBJECT (src, "got chunk, but not for current message");
     return;
   }
+
+  src->have_body = FALSE;
   if (G_UNLIKELY (src->session_io_status !=
           GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_RUNNING)) {
     /* Probably a redirect. */
@@ -1149,7 +1570,7 @@ gst_soup_http_src_response_cb (SoupSession * session, SoupMessage * msg,
     /* Ignore redirections. */
     return;
   }
-  GST_DEBUG_OBJECT (src, "got response %d: %s", msg->status_code,
+  GST_WARNING_OBJECT (src, "got response %d: %s", msg->status_code,
       msg->reason_phrase);
   if (src->session_io_status == GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_RUNNING &&
       src->read_position > 0) {
@@ -1175,15 +1596,25 @@ gst_soup_http_src_parse_status (SoupMessage * msg, GstSoupHTTPSrc * src)
     switch (msg->status_code) {
       case SOUP_STATUS_CANT_RESOLVE:
       case SOUP_STATUS_CANT_RESOLVE_PROXY:
-        SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, NOT_FOUND,
-            _("Could not resolve server name."));
-        src->ret = GST_FLOW_ERROR;
+#ifdef GST_EXT_SOUP_MODIFICATION
+        if (src->retry != TRUE)
+#endif
+        {
+          SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, NOT_FOUND,
+              _("Could not resolve server name."));
+          src->ret = GST_FLOW_ERROR;
+        }
         break;
       case SOUP_STATUS_CANT_CONNECT:
       case SOUP_STATUS_CANT_CONNECT_PROXY:
-        SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, OPEN_READ,
-            _("Could not establish connection to server."));
-        src->ret = GST_FLOW_ERROR;
+#ifdef GST_EXT_SOUP_MODIFICATION
+        if (src->retry != TRUE)
+#endif
+        {
+          SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, OPEN_READ,
+              _("Could not establish connection to server."));
+          src->ret = GST_FLOW_ERROR;
+        }
         break;
       case SOUP_STATUS_SSL_FAILED:
         SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, OPEN_READ,
@@ -1191,10 +1622,15 @@ gst_soup_http_src_parse_status (SoupMessage * msg, GstSoupHTTPSrc * src)
         src->ret = GST_FLOW_ERROR;
         break;
       case SOUP_STATUS_IO_ERROR:
-        SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, READ,
-            _("A network error occured, or the server closed the connection "
-                "unexpectedly."));
-        src->ret = GST_FLOW_ERROR;
+#ifdef GST_EXT_SOUP_MODIFICATION
+        if (src->retry != TRUE)
+#endif
+        {
+          SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, READ,
+              _("A network error occured, or the server closed the connection "
+                  "unexpectedly."));
+          src->ret = GST_FLOW_ERROR;
+        }
         break;
       case SOUP_STATUS_MALFORMED:
         SOUP_HTTP_SRC_ERROR (src, msg, RESOURCE, READ,
@@ -1209,6 +1645,17 @@ gst_soup_http_src_parse_status (SoupMessage * msg, GstSoupHTTPSrc * src)
       SOUP_STATUS_IS_REDIRECTION (msg->status_code) ||
       SOUP_STATUS_IS_SERVER_ERROR (msg->status_code)) {
     /* Report HTTP error. */
+    /* when content_size is unknown and we have just finished receiving
+     * a body message, requests that go beyond the content limits will result
+     * in an error. Here we convert those to EOS */
+    if (msg->status_code == SOUP_STATUS_REQUESTED_RANGE_NOT_SATISFIABLE &&
+        src->have_body && src->have_size) {
+      GST_WARNING_OBJECT (src, "Requested range out of limits and received full "
+          "body, returning EOS");
+      src->ret = GST_FLOW_UNEXPECTED;
+      return;
+    }
+
     /* FIXME: reason_phrase is not translated and not suitable for user
      * error dialog according to libsoup documentation.
      * FIXME: error code (OPEN_READ vs. READ) should depend on http status? */
@@ -1223,6 +1670,8 @@ gst_soup_http_src_parse_status (SoupMessage * msg, GstSoupHTTPSrc * src)
 static gboolean
 gst_soup_http_src_build_message (GstSoupHTTPSrc * src)
 {
+  gchar *user_agent = DEFAULT_USER_AGENT;
+
   src->msg = soup_message_new (SOUP_METHOD_GET, src->location);
   if (!src->msg) {
     GST_ELEMENT_ERROR (src, RESOURCE, OPEN_READ,
@@ -1236,31 +1685,54 @@ gst_soup_http_src_build_message (GstSoupHTTPSrc * src)
     soup_message_headers_append (src->msg->request_headers, "icy-metadata",
         "1");
   }
-  if (src->cookies) {
-    gchar **cookie;
+
+  if (src->user_agent) {
+    user_agent = src->user_agent;
+    GST_DEBUG_OBJECT(src, "Set User-Agent = %s", user_agent);
+  }
+
+  soup_message_headers_append (src->msg->request_headers, "User-Agent",
+        user_agent);
+
+#ifdef SEEK_CHANGES
+  soup_message_headers_append (src->msg->request_headers, "Accept-Ranges","bytes");
+#endif
+
+
 #ifdef GST_EXT_SOUP_MODIFICATION
-    SoupURI *uri;
-    SoupCookie *cookie_parsed;
+  if (src->cookie_jar) {
+    GSList *cookie_list, *c;
+    gchar **cookies;
     gchar *header;
 
+    SoupURI *uri = NULL;
+    SoupCookie *cookie;
     uri = soup_uri_new (src->location);
-    for (cookie = src->cookies; *cookie != NULL; cookie++) {
-      if ((cookie_parsed = soup_cookie_parse (*cookie, uri)) != NULL) {
-        header = soup_cookie_to_cookie_header (cookie_parsed);
-        soup_message_headers_append (src->msg->request_headers, "Cookie",
+
+    if ((cookie_list = soup_cookie_jar_all_cookies (src->cookie_jar)) != NULL) {
+      cookies = g_new0 (gchar *, g_slist_length(cookie_list) + 1);
+      for (c = cookie_list; c; c = c->next) {
+        cookie = (SoupCookie *)c->data;
+        if (soup_cookie_applies_to_uri(cookie, uri)) {
+          header = soup_cookie_to_cookie_header (cookie);
+          soup_message_headers_append (src->msg->request_headers, "Cookie",
           header);
-        g_free (header);
-        soup_cookie_free (cookie_parsed);
+          g_free (header);
+        }
       }
     }
-    soup_uri_free (uri);
+    soup_cookies_free (cookie_list);
+  }
 #else
+  gchar **cookie;
+  if (src->cookies) {
     for (cookie = src->cookies; *cookie != NULL; cookie++) {
       soup_message_headers_append (src->msg->request_headers, "Cookie",
-          *cookie);
+        *cookie);
     }
-#endif
   }
+#endif
+
   soup_message_headers_append (src->msg->request_headers,
       "transferMode.dlna.org", "Streaming");
   src->retry = FALSE;
@@ -1277,18 +1749,48 @@ gst_soup_http_src_build_message (GstSoupHTTPSrc * src)
       (src->automatic_redirect ? 0 : SOUP_MESSAGE_NO_REDIRECT));
   soup_message_set_chunk_allocator (src->msg,
       gst_soup_http_src_chunk_allocator, src, NULL);
+
+#ifdef USE_SAMSUNG_LINK
+  if(src->is_x_asp && src->seek_time_position >= 0)
+  {
+    gchar seek_time[64];
+    gint rc = 0;
+    rc = g_snprintf(seek_time, 64,  "%"G_GINT64_FORMAT, src->seek_time_position);
+    if (rc > 0)
+    {
+      soup_message_headers_append (src->msg->request_headers,
+      "X-ASP-SEEK-TIME", seek_time);
+    }
+    src->seek_time_position = (gint64)-1;
+  }
+#endif
+
 #ifdef SEEK_CHANGES
   //gst_soup_http_src_add_range_header (src, src->request_position);
   if(src->range_size > 0)
     soup_message_headers_set_range(src->msg->request_headers, src->request_position, (src->request_position+src->range_size-1));
   else {
-    gst_soup_http_src_add_range_header (src, src->request_position);
+#ifdef GST_EXT_SOUP_MODIFICATION
+    gchar *dash_mediaRange = NULL;
+    dash_mediaRange = strstr (src->location, "range=");
+      if (dash_mediaRange)
+        gst_soup_http_src_add_range_header (src, src->request_position,dash_mediaRange);
+      else
+        gst_soup_http_src_add_range_header (src, src->request_position,NULL);
+#else
+        gst_soup_http_src_add_range_header (src, src->request_position);
+#endif
     gst_soup_http_src_add_extra_headers (src);
     GST_DEBUG_OBJECT (src, "request headers:");
     soup_message_headers_foreach (src->msg->request_headers,gst_soup_http_src_headers_foreach, src);
   }
 #else
+
+#ifdef GST_EXT_SOUP_MODIFICATION
+  gst_soup_http_src_add_range_header (src, src->request_position,NULL);
+#else
   gst_soup_http_src_add_range_header (src, src->request_position);
+#endif
 
   gst_soup_http_src_add_extra_headers (src);
 
@@ -1317,7 +1819,11 @@ gst_soup_http_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
       return GST_FLOW_UNEXPECTED;
     } else if (src->session_io_status ==
         GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_IDLE) {
+      #ifdef GST_EXT_SOUP_MODIFICATION
+      gst_soup_http_src_add_range_header (src, src->request_position,NULL);
+	  #else
       gst_soup_http_src_add_range_header (src, src->request_position);
+	  #endif
     } else {
       GST_DEBUG_OBJECT (src, "Seek from position %" G_GUINT64_FORMAT
           " to %" G_GUINT64_FORMAT ": requeueing connection request",
@@ -1356,7 +1862,10 @@ gst_soup_http_src_create (GstPushSrc * psrc, GstBuffer ** outbuf)
       break;
     }
     if (src->retry) {
-      GST_DEBUG_OBJECT (src, "Reconnecting");
+      GST_WARNING_OBJECT (src, "Reconnecting");
+#ifdef GST_EXT_SOUP_MODIFICATION
+      g_usleep (1000000);
+#endif
       if (!gst_soup_http_src_build_message (src))
         return GST_FLOW_ERROR;
       src->retry = FALSE;
@@ -1395,8 +1904,37 @@ static gboolean
 gst_soup_http_src_start (GstBaseSrc * bsrc)
 {
   GstSoupHTTPSrc *src = GST_SOUP_HTTP_SRC (bsrc);
+#ifdef GST_EXT_SOUP_MODIFICATION
+  char **array = NULL;
+  SoupURI *base_uri;
+#endif
 
   GST_DEBUG_OBJECT (src, "start(\"%s\")", src->location);
+
+#ifdef GST_EXT_SOUP_MODIFICATION
+/* For videohub DRM dash uri which has custom data */
+  gchar *has_custom_data = strstr(src->location,"[]<>");
+  gchar *has_mpd= strstr(src->location,".mpd");
+
+  if (src->videohub_dash_uri){
+    g_free(src->videohub_dash_uri);
+    src->videohub_dash_uri = NULL;
+  }
+
+  if ( has_custom_data !=NULL && has_mpd !=NULL ) {
+    GST_DEBUG_OBJECT(src,"The uri has custom data..");
+
+    /* keep uri which includes custom data for forwarding it to qtdemux */
+    src->videohub_dash_uri = g_strdup(src->location);
+
+    /* make normal uri without custom data for requesting to server */
+    gchar *videohub_dash_normal_uri = NULL;
+    videohub_dash_normal_uri = strtok(src->location,"[]<>");
+    src->location = NULL;
+    src->location = videohub_dash_normal_uri;
+    GST_DEBUG_OBJECT (src, "Videohub normal uri(\"%s\")", src->location);
+  }
+#endif
 
   if (!src->location) {
     GST_ELEMENT_ERROR (src, RESOURCE, OPEN_READ, (_("No URL set.")),
@@ -1414,11 +1952,26 @@ gst_soup_http_src_start (GstBaseSrc * bsrc)
     return FALSE;
   }
 
+#ifdef GST_EXT_SOUP_MODIFICATION
+  if (src->timeout == 0)
+    src->session_timeout = 0;
+  else if ((src->timeout > 0) && (src->timeout < DEFAULT_SESSION_TIMEOUT))
+    src->session_timeout = src->timeout;
+
+  GST_DEBUG_OBJECT (src, "session timeout: %d", src->session_timeout);
+
+  src->duration = GST_CLOCK_TIME_NONE;
+#endif
+
   if (src->proxy == NULL) {
     src->session =
         soup_session_async_new_with_options (SOUP_SESSION_ASYNC_CONTEXT,
         src->context, SOUP_SESSION_USER_AGENT, src->user_agent,
+#ifdef GST_EXT_SOUP_MODIFICATION
+        SOUP_SESSION_TIMEOUT, src->session_timeout,
+#else
         SOUP_SESSION_TIMEOUT, src->timeout,
+#endif
 #ifdef HAVE_LIBSOUP_GNOME
         SOUP_SESSION_ADD_FEATURE_BY_TYPE, SOUP_TYPE_PROXY_RESOLVER_GNOME,
 #endif
@@ -1427,7 +1980,11 @@ gst_soup_http_src_start (GstBaseSrc * bsrc)
     src->session =
         soup_session_async_new_with_options (SOUP_SESSION_ASYNC_CONTEXT,
         src->context, SOUP_SESSION_PROXY_URI, src->proxy,
+#ifdef GST_EXT_SOUP_MODIFICATION
+        SOUP_SESSION_TIMEOUT, src->session_timeout,
+#else
         SOUP_SESSION_TIMEOUT, src->timeout,
+#endif
         SOUP_SESSION_USER_AGENT, src->user_agent, NULL);
   }
 
@@ -1438,8 +1995,38 @@ gst_soup_http_src_start (GstBaseSrc * bsrc)
   }
 
 #ifdef GST_EXT_SOUP_MODIFICATION
+  SoupCookie *soup_cookie = NULL;
+  GSList *c_list = NULL;
+
   soup_session_add_feature_by_type (src->session, SOUP_TYPE_COOKIE_JAR);
   src->cookie_jar = SOUP_COOKIE_JAR (soup_session_get_feature (src->session, SOUP_TYPE_COOKIE_JAR));
+  if ((array = src->cookies) != NULL) {
+    base_uri = soup_uri_new (src->location);
+    while (*array != NULL) {
+      soup_cookie = soup_cookie_parse (*array++, base_uri);
+      if (soup_cookie != NULL) {
+        GST_INFO_OBJECT (src, "adding cookies..");
+        soup_cookie_jar_add_cookie (src->cookie_jar, soup_cookie);
+      }
+    }
+    soup_uri_free (base_uri);
+  }
+
+  /* check if temporal cookie store exist. add them to jar */
+  if ( src->cookie_list ) {
+    for ( c_list = src->cookie_list; c_list; c_list = c_list->next) {
+      soup_cookie = (SoupCookie *)c_list->data;
+      if ( soup_cookie ) {
+        soup_cookie_jar_add_cookie (src->cookie_jar, soup_cookie);
+        c_list->data = NULL;
+        GST_INFO_OBJECT (src, "adding cookies..");
+      }
+    }
+    /* freeing list since all cookies are stolen by jar */
+    g_slist_free(src->cookie_list);
+    src->cookie_list = NULL;
+  }
+
 #endif
 
   g_signal_connect (src->session, "authenticate",
@@ -1541,6 +2128,11 @@ gst_soup_http_src_do_seek (GstBaseSrc * bsrc, GstSegment * segment)
 #endif
   if (src->read_position == segment->start) {
     GST_DEBUG_OBJECT (src, "Seeking to current read position");
+
+#ifdef SEEK_CHANGES
+  if (src->request_position >= src->file_size)
+    src->request_position = segment->start;
+#endif
     return TRUE;
   }
 
@@ -1575,9 +2167,92 @@ gst_soup_http_src_query (GstBaseSrc * bsrc, GstQuery * query)
 
   switch (GST_QUERY_TYPE (query)) {
     case GST_QUERY_URI:
+#ifdef GST_EXT_SOUP_MODIFICATION
+    if(src->videohub_dash_uri)
+      gst_query_set_uri (query, src->videohub_dash_uri);
+    else
+#endif
       gst_query_set_uri (query, src->location);
       ret = TRUE;
       break;
+#ifdef GST_EXT_SOUP_MODIFICATION
+    case GST_QUERY_CUSTOM: {
+        GstStructure *s;
+        s = gst_query_get_structure (query);
+        if (gst_structure_has_name (s, "HTTPCookies")) {
+          GSList *cookie_list, *c;
+          gchar **cookies, **array;
+          GValue value = { 0, { { 0 } } };
+
+          g_value_init (&value, G_TYPE_STRV);
+          cookies = NULL;
+          if ((cookie_list = soup_cookie_jar_all_cookies (src->cookie_jar)) != NULL) {
+            cookies = g_new0 (gchar *, g_slist_length(cookie_list) + 1);
+            array = cookies;
+            for (c = cookie_list; c; c = c->next) {
+              *array++ = soup_cookie_to_set_cookie_header ((SoupCookie *)(c->data));
+            }
+            soup_cookies_free (cookie_list);
+          }
+          g_value_set_boxed (&value, cookies);
+
+          GST_INFO_OBJECT (src, "Received supported custom query");
+          gst_structure_set_value (s, "cookies", &value);
+          ret = TRUE;
+        }
+#ifdef USE_SAMSUNG_LINK
+        else if (gst_structure_has_name (s, "X-ASP")){
+          GST_INFO_OBJECT (src, "Received X-ASP custom query, X-ASP is %d", src->is_x_asp);
+          GValue value = { 0, };
+          g_value_init (&value, G_TYPE_BOOLEAN);
+          g_value_set_boolean (&value, src->is_x_asp);
+          gst_structure_set_value (s, "x-asp", &value);
+          ret = TRUE;
+        }
+#endif
+        else if (gst_structure_has_name(s, "HTTPUserAgent")) {
+          GValue value = { 0, };
+          g_value_init (&value, G_TYPE_STRING);
+          g_value_set_string (&value, src->user_agent);
+          GST_INFO_OBJECT (src, "Received HTTPUserAgent custom query");
+          gst_structure_set_value (s, "user-agent", &value);
+          ret = TRUE;
+        }
+        else {
+          GST_WARNING_OBJECT (src,"Unsupported query");
+          ret = FALSE;
+        }
+      }
+      break;
+    case GST_QUERY_DURATION: {
+
+      GstFormat format;
+
+      gst_query_parse_duration (query, &format, NULL);
+
+      if (format == GST_FORMAT_TIME) {
+        if (src->duration != GST_CLOCK_TIME_NONE) {
+          gst_query_set_duration (query, GST_FORMAT_TIME, src->duration);
+          GST_DEBUG_OBJECT (src,"query duration time is %" GST_TIME_FORMAT,
+          GST_TIME_ARGS(src->duration));
+          ret = TRUE;
+        } else {
+          GST_WARNING_OBJECT (src,"Unsupported query");
+          ret = FALSE;
+        }
+
+      } else if (format == GST_FORMAT_BYTES) {
+        gst_query_set_duration (query, GST_FORMAT_BYTES, src->file_size);
+        GST_DEBUG_OBJECT (src,"query duration bytes is %" G_GUINT64_FORMAT, src->file_size);
+        ret = TRUE;
+      } else {
+        GST_WARNING_OBJECT (src,"Unsupported query");
+        ret = FALSE;
+      }
+    }
+      break;
+#endif
+
     default:
       ret = FALSE;
       break;
@@ -1588,6 +2263,43 @@ gst_soup_http_src_query (GstBaseSrc * bsrc, GstQuery * query)
 
   return ret;
 }
+
+#ifdef USE_SAMSUNG_LINK
+static gboolean
+gst_soup_http_src_event (GstBaseSrc * bsrc, GstEvent *event)
+{
+  GstSoupHTTPSrc *src = GST_SOUP_HTTP_SRC (bsrc);
+  gboolean ret;
+
+  GST_DEBUG_OBJECT (src, "handling %s event", GST_EVENT_TYPE_NAME (event));
+
+  switch (GST_EVENT_TYPE (event)){
+    case GST_EVENT_SEEK:
+      if (src->is_x_asp) {
+        gdouble rate;
+        GstFormat format;
+        GstSeekFlags flags;
+        GstSeekType start_type, stop_type;
+        gint64 start, stop;
+
+        gst_event_parse_seek (event, &rate, &format, &flags, &start_type, &start,
+                                     &stop_type, &stop);
+        if (format == GST_FORMAT_TIME) {
+          src->seek_time_position = start / G_GINT64_CONSTANT (1000000);
+          GST_DEBUG_OBJECT (src,"seek position time is %" G_GINT64_FORMAT"(ms)", src->seek_time_position);
+        }
+      }
+      ret = GST_BASE_SRC_CLASS (parent_class)->event (bsrc, event);
+      break;
+    default:
+      ret = GST_BASE_SRC_CLASS (parent_class)->event (bsrc, event);
+      break;
+  }
+
+  return ret;
+}
+#endif
+
 
 static gboolean
 gst_soup_http_src_set_location (GstSoupHTTPSrc * src, const gchar * uri)

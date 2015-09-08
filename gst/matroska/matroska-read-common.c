@@ -1117,8 +1117,9 @@ gst_matroska_read_common_parse_index (GstMatroskaReadCommon * common,
   GstFlowReturn ret = GST_FLOW_OK;
   guint i;
 
-  if (common->index)
-    g_array_free (common->index, TRUE);
+  if (common->index){
+    return ret;
+  }
   common->index =
       g_array_sized_new (FALSE, FALSE, sizeof (GstMatroskaIndex), 128);
 

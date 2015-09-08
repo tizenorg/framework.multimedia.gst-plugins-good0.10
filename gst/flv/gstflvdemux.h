@@ -34,6 +34,9 @@ G_BEGIN_DECLS
   (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_FLV_DEMUX))
 #define GST_IS_FLV_DEMUX_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_FLV_DEMUX))
+
+#define FLVDEMUX_MODIFICATION
+
 typedef struct _GstFlvDemux GstFlvDemux;
 typedef struct _GstFlvDemuxClass GstFlvDemuxClass;
 

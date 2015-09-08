@@ -89,6 +89,12 @@ typedef struct _GstMatroskaDemux {
   gboolean video;
   gboolean found_videokeyframe;
   gboolean found_audioframe;
+  gboolean seek_head_cluster_info_absent;
+  gboolean seek_head_cue_info_absent;
+  gboolean index_table_created;
+  gboolean index_table_array_creation;
+  gboolean first_index_table_creation;
+  guint32  initial_offset;
 #endif
 
   /* index stuff */
@@ -113,6 +119,7 @@ typedef struct _GstMatroskaDemux {
   gboolean              is_eos_simpleblock;
   gint                  no_video_frame;
   gboolean              video_keyframe_pushed;
+  GList*                Subtitle_language_list;
 #endif
 
   /* gap handling */

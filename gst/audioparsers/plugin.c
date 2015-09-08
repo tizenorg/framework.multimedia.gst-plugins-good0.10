@@ -39,8 +39,10 @@ plugin_init (GstPlugin * plugin)
       GST_RANK_PRIMARY + 1, GST_TYPE_AMR_PARSE);
   ret &= gst_element_register (plugin, "ac3parse",
       GST_RANK_PRIMARY + 1, GST_TYPE_AC3_PARSE);
+#ifdef GST_EXT_ENABLE_PARSER_MODIFICATION // should be disable in mobile because not supported codec
   ret &= gst_element_register (plugin, "dcaparse",
       GST_RANK_PRIMARY + 1, GST_TYPE_DCA_PARSE);
+#endif
   ret &= gst_element_register (plugin, "flacparse",
       GST_RANK_PRIMARY + 1, GST_TYPE_FLAC_PARSE);
   ret &= gst_element_register (plugin, "mpegaudioparse",

@@ -227,6 +227,11 @@ struct _GstRTSPSrc {
   gchar             *control;
   guint              next_port_num;
 
+#ifdef GST_EXT_RTSPSRC_MODIFICATION
+  gboolean          wait_pause_response;
+#endif
+ 
+
   /* supported methods */
   gint               methods;
 

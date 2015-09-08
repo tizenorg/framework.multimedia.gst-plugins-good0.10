@@ -51,6 +51,16 @@ G_BEGIN_DECLS
 #define GST_PULSESINK_CAST(obj) \
   ((GstPulseSink *)(obj))
 
+#ifdef __TIZEN__
+enum {
+	PULSESINK_LOCAL_CONFIGURATION_LOW,
+	PULSESINK_LOCAL_CONFIGURATION_MID,
+	PULSESINK_LOCAL_CONFIGURATION_HIGH,
+	PULSESINK_LOCAL_CONFIGURATION_VERY_HIGH,
+	PULSESINK_LOCAL_CONFIGURATION_MAX,
+};
+#endif
+
 typedef struct _GstPulseSink GstPulseSink;
 typedef struct _GstPulseSinkClass GstPulseSinkClass;
 
@@ -61,16 +71,36 @@ struct _GstPulseSink
   gchar *server, *device, *stream_name, *client_name;
   gchar *device_description;
 
+  gint volume_type;
+  gint latency;
+  gint user_route;
+
   GstPulseProbe *probe;
 
   gdouble volume;
   gboolean volume_set:1;
+#ifdef __TIZEN__
+  gint mute;
+#else
   gboolean mute:1;
+#endif
   gboolean mute_set:1;
 
   guint defer_pending;
 
   gint notify; /* atomic */
+
+#ifdef __TIZEN__
+  gint fade_stat;
+  gint fade_duration;
+  gint support_type;
+  gint buffer_time[PULSESINK_LOCAL_CONFIGURATION_MAX];
+  gint latency_time[PULSESINK_LOCAL_CONFIGURATION_MAX];
+#ifdef PCM_DUMP_ENABLE
+  gint need_dump_input;
+  FILE *dump_fd_input;
+#endif
+#endif
 
   const gchar *pa_version;
 

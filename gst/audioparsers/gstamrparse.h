@@ -63,6 +63,10 @@ struct _GstAmrParse {
   gboolean need_header;
   gint header;
   gboolean wide;
+#ifdef GST_EXT_AMRPARSER_MODIFICATION
+  gboolean sync_check;
+  GstActivateMode pad_mode;
+#endif
 };
 
 /**

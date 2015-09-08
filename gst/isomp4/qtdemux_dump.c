@@ -330,27 +330,6 @@ qtdemux_dump_stts (GstQTDemux * qtdemux, GstByteReader * data, int depth)
 }
 
 gboolean
-qtdemux_dump_stps (GstQTDemux * qtdemux, GstByteReader * data, int depth)
-{
-  guint32 ver_flags = 0, num_entries = 0, i;
-
-  if (!gst_byte_reader_get_uint32_be (data, &ver_flags) ||
-      !gst_byte_reader_get_uint32_be (data, &num_entries))
-    return FALSE;
-
-  GST_LOG ("%*s  version/flags: %08x", depth, "", ver_flags);
-  GST_LOG ("%*s  n entries:     %d", depth, "", num_entries);
-
-  if (!qt_atom_parser_has_chunks (data, num_entries, 4))
-    return FALSE;
-
-  for (i = 0; i < num_entries; i++) {
-    GST_LOG ("%*s    sample:        %u", depth, "", GET_UINT32 (data));
-  }
-  return TRUE;
-}
-
-gboolean
 qtdemux_dump_stss (GstQTDemux * qtdemux, GstByteReader * data, int depth)
 {
   guint32 ver_flags = 0, num_entries = 0, i;
@@ -485,27 +464,6 @@ qtdemux_dump_co64 (GstQTDemux * qtdemux, GstByteReader * data, int depth)
     GST_LOG ("%*s    chunk offset:  %" G_GUINT64_FORMAT, depth, "",
         GET_UINT64 (data));
   }
-  return TRUE;
-}
-
-gboolean
-qtdemux_dump_dcom (GstQTDemux * qtdemux, GstByteReader * data, int depth)
-{
-  if (!qt_atom_parser_has_remaining (data, 4))
-    return FALSE;
-
-  GST_LOG ("%*s  compression type: %" GST_FOURCC_FORMAT, depth, "",
-      GST_FOURCC_ARGS (GET_FOURCC (data)));
-  return TRUE;
-}
-
-gboolean
-qtdemux_dump_cmvd (GstQTDemux * qtdemux, GstByteReader * data, int depth)
-{
-  if (!qt_atom_parser_has_remaining (data, 4))
-    return FALSE;
-
-  GST_LOG ("%*s  length: %d", depth, "", GET_UINT32 (data));
   return TRUE;
 }
 
@@ -714,6 +672,28 @@ qtdemux_dump_mehd (GstQTDemux * qtdemux, GstByteReader * data, int depth)
   if (qt_atom_parser_get_offset (data, value_size, &fragment_duration)) {
     GST_LOG ("%*s  fragment duration: %" G_GUINT64_FORMAT,
         depth, "", fragment_duration);
+    return TRUE;
+  }
+
+  return FALSE;
+}
+
+gboolean
+qtdemux_dump_tfdt (GstQTDemux * qtdemux, GstByteReader * data, int depth)
+{
+  guint32 version = 0;
+  guint64 decode_time;
+  guint value_size;
+
+  if (!gst_byte_reader_get_uint32_be (data, &version))
+    return FALSE;
+
+  GST_LOG ("%*s  version/flags: %08x", depth, "", version);
+
+  value_size = ((version >> 24) == 1) ? sizeof (guint64) : sizeof (guint32);
+  if (qt_atom_parser_get_offset (data, value_size, &decode_time)) {
+    GST_LOG ("%*s  Track fragment decode time: %" G_GUINT64_FORMAT,
+        depth, "", decode_time);
     return TRUE;
   }
 

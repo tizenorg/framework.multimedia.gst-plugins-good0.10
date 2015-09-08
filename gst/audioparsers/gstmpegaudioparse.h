@@ -39,6 +39,9 @@ G_BEGIN_DECLS
 #define GST_IS_MPEG_AUDIO_PARSE_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_TYPE((klass), GST_TYPE_MPEG_AUDIO_PARSE))
 
+#define GST_EXT_MP3PARSER_MODIFICATION
+#define GST_MP3PARSE_ALP_EXYNOS
+
 typedef struct _GstMpegAudioParse GstMpegAudioParse;
 typedef struct _GstMpegAudioParseClass GstMpegAudioParseClass;
 
@@ -59,6 +62,13 @@ struct _GstMpegAudioParse {
   GstClockTime max_bitreservoir;
   /* samples per frame */
   gint        spf;
+
+  /* added for make seek table */
+  guint32         lsf;
+  guint32        frame_duration;
+  guint32        frame_per_sec;
+  gint64          encoded_file_size;
+  guint32        frame_byte;
 
   gboolean     sent_codec_tag;
   guint        last_posted_bitrate;
@@ -92,6 +102,24 @@ struct _GstMpegAudioParse {
   /* LAME info */
   guint32      encoder_delay;
   guint32      encoder_padding;
+
+#ifdef GST_MP3PARSE_ALP_EXYNOS
+  gboolean       alp_mp3dec;
+  gboolean       alp_mode_flag;
+  gboolean       mp3alp_initialized;
+  /* ALP - for frame number */
+  guint32         mp3alp_frame_1st;
+  guint32         mp3alp_frame_count;
+  guint32         mp3alp_buffer_count; 
+  gint64         mp3alp_frame_duration;
+  gint64         mp3alp_buffer_duration;  
+  gdouble         mp3alp_frame_duration_float;
+  guint32         mp3alp_frame_1st_bitrate;
+#endif
+
+#ifdef GST_EXT_MP3PARSER_MODIFICATION
+  gboolean       http_seek_flag;
+#endif
 };
 
 /**

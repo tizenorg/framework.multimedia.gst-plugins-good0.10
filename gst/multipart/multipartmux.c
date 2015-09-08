@@ -486,6 +486,12 @@ gst_multipart_mux_collected (GstCollectPads * pads, GstMultipartMux * mux)
   header = g_strdup_printf ("--%s\r\nContent-Type: %s\r\n"
       "Content-Length: %u\r\n\r\n",
       mux->boundary, mime, GST_BUFFER_SIZE (best->buffer));
+#ifdef GST_EXT_ENHANCEMENT
+  if (header == NULL) {
+    GST_ERROR_OBJECT(mux, "failed to alloc header");
+    goto alloc_failed;
+  }
+#endif /* GST_EXT_ENHANCEMENT */
   headerlen = strlen (header);
 
   ret = gst_pad_alloc_buffer_and_set_caps (mux->srcpad, GST_BUFFER_OFFSET_NONE,
@@ -495,6 +501,9 @@ gst_multipart_mux_collected (GstCollectPads * pads, GstMultipartMux * mux)
 
   memcpy (GST_BUFFER_DATA (headerbuf), header, headerlen);
   g_free (header);
+#ifdef GST_EXT_ENHANCEMENT
+  header = NULL;
+#endif /* GST_EXT_ENHANCEMENT */
 
   /* the header has the same timestamp as the data buffer (which we will push
    * below) and has a duration of 0 */
@@ -592,7 +601,14 @@ alloc_failed:
   {
     GST_WARNING_OBJECT (mux,
         "failed allocating a %" G_GSIZE_FORMAT " bytes buffer", headerlen);
+#ifdef GST_EXT_ENHANCEMENT
+    if (header) {
+      g_free (header);
+      header = NULL;
+    }
+#else /* GST_EXT_ENHANCEMENT */
     g_free (header);
+#endif /* GST_EXT_ENHANCEMENT */
     goto beach;
   }
 }

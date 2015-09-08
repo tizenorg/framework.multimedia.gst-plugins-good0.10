@@ -280,6 +280,23 @@ AG_GST_CHECK_FEATURE(GCONFTOOL, [GConf schemas], , [
   AC_SUBST(HAVE_GCONFTOOL)
 ])
 
+AC_ARG_ENABLE(pcmdump, AC_HELP_STRING([--enable-pcmdump], [pcm dump]),
+  [
+    case "${enableval}" in
+      yes) PCM_DUMP_ENABLE=yes ;;
+      no)  PCM_DUMP_ENABLE=no ;;
+      *)   AC_MSG_ERROR(bad value ${enableval} for --enable-pcmdump) ;;
+    esac
+  ],
+  [PCM_DUMP_ENABLE=no])
+AM_CONDITIONAL([PCM_DUMP_ENABLE], [test "x$PCM_DUMP_ENABLE" = "xyes"])
+
+if test "x$PCM_DUMP_ENABLE" = "xyes"; then
+PKG_CHECK_MODULES(VCONF, vconf)
+AC_SUBST(VCONF_CFLAGS)
+AC_SUBST(VCONF_LIBS)
+fi
+
 dnl use divx drm --------------------------------------------------------------------------
 AC_ARG_ENABLE(divx-drm, AC_HELP_STRING([--enable-divx-drm], [using divx drm]),
   [
@@ -384,6 +401,17 @@ AG_GST_CHECK_PLUGIN(videomixer)
 AG_GST_CHECK_PLUGIN(wavenc)
 AG_GST_CHECK_PLUGIN(wavparse)
 AG_GST_CHECK_PLUGIN(y4m)
+
+#PKG_CHECK_MODULES(DRM_CLIENT, drm-client)
+#AC_SUBST(DRM_CLIENT_CFLAGS)
+#AC_SUBST(DRM_CLIENT_LIBS)
+#PKG_CHECK_MODULES(DRM_TRUSTED, drm-trusted)
+#AC_SUBST(DRM_TRUSTED_CFLAGS)
+#AC_SUBST(DRM_TRUSTED_LIBS)
+
+PKG_CHECK_MODULES(INIPARSER, iniparser)
+AC_SUBST(INIPARSER_CFLAGS)
+AC_SUBST(INIPARSER_LIBS)
 
 dnl *** checks for socket and nsl libraries ***
 AC_CHECK_FUNC(socket,,[AC_CHECK_LIB(socket,socket)])

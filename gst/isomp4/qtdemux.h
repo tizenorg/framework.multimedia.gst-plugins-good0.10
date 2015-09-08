@@ -25,9 +25,17 @@
 #include <gst/base/gstadapter.h>
 
 #define QTDEMUX_MODIFICATION
+#define MULTI_AUDIO 1
 
 #ifdef QTDEMUX_MODIFICATION
 #include <stdio.h>
+#ifdef DRM_ENABLE
+#include <drm_client.h>
+#include <drm_trusted_client.h>
+#include <drm_client_types.h>
+#include <drm_trusted_client_types.h>
+#endif
+#include <gst/base/gstbitreader.h>
 #endif
 
 G_BEGIN_DECLS
@@ -58,6 +66,149 @@ typedef struct _GstQTDemux GstQTDemux;
 typedef struct _GstQTDemuxClass GstQTDemuxClass;
 typedef struct _QtDemuxStream QtDemuxStream;
 
+#ifdef QTDEMUX_MODIFICATION
+typedef struct _GstMpeg4VideoObjectLayer        GstMpeg4VideoObjectLayer;
+typedef struct _GstMpeg4VisualObject            GstMpeg4VisualObject;
+typedef struct _QtDemuxDrm QtDemuxDrm;
+typedef enum {
+  GST_MPEG4_SQUARE        = 0x01,
+  GST_MPEG4_625_TYPE_4_3  = 0x02,
+  GST_MPEG4_525_TYPE_4_3  = 0x03,
+  GST_MPEG4_625_TYPE_16_9 = 0x04,
+  GST_MPEG4_525_TYPE_16_9 = 0x05,
+  GST_MPEG4_EXTENDED_PAR  = 0x0f,
+} GstMpeg4AspectRatioInfo;
+typedef enum {
+  GST_MPEG4_VIDEO_ID         = 0x01,
+  GST_MPEG4_STILL_TEXTURE_ID = 0x02,
+  GST_MPEG4_STILL_MESH_ID    = 0x03,
+  GST_MPEG4_STILL_FBA_ID     = 0x04,
+  GST_MPEG4_STILL_3D_MESH_ID = 0x05,
+  /*... reserved */
+
+} GstMpeg4VisualObjectType;
+typedef enum {
+  /* Other value are reserved */
+  GST_MPEG4_CHROMA_4_2_0 = 0x01
+} GstMpeg4ChromaFormat;
+typedef enum {
+  GST_MPEG4_RECTANGULAR,
+  GST_MPEG4_BINARY,
+  GST_MPEG4_BINARY_ONLY,
+  GST_MPEG4_GRAYSCALE
+} GstMpeg4VideoObjectLayerShape;
+typedef enum {
+  GST_MPEG4_SPRITE_UNUSED,
+  GST_MPEG4_SPRITE_STATIC,
+  GST_MPEG4_SPRITE_GMG
+} GstMpeg4SpriteEnable;
+typedef enum {
+  GST_MPEG4_PARSER_OK,
+  GST_MPEG4_PARSER_BROKEN_DATA,
+  GST_MPEG4_PARSER_NO_PACKET,
+  GST_MPEG4_PARSER_NO_PACKET_END,
+  GST_MPEG4_PARSER_ERROR,
+} GstMpeg4ParseResult;
+struct _GstMpeg4VideoObjectLayer {
+  guint8 random_accessible_vol;
+  guint8 video_object_type_indication;
+
+  guint8 is_object_layer_identifier;
+  /* if is_object_layer_identifier */
+  guint8 verid;
+  guint8 priority;
+
+  GstMpeg4AspectRatioInfo aspect_ratio_info;
+  guint8 par_width;
+  guint8 par_height;
+
+  guint8 control_parameters;
+  /* if control_parameters */
+  GstMpeg4ChromaFormat chroma_format;
+  guint8 low_delay;
+  guint8 vbv_parameters;
+  /* if vbv_parameters */
+  guint16 first_half_bitrate;
+  guint16 latter_half_bitrate;
+  guint16 first_half_vbv_buffer_size;
+  guint16 latter_half_vbv_buffer_size;
+  guint16 first_half_vbv_occupancy;
+  guint16 latter_half_vbv_occupancy;
+
+  /* Computed values */
+  guint32 bit_rate;
+  guint32 vbv_buffer_size;
+
+  GstMpeg4VideoObjectLayerShape shape;
+  /* if shape == GST_MPEG4_GRAYSCALE && verid =! 1 */
+  guint8 shape_extension;
+
+  guint16 vop_time_increment_resolution;
+  guint8 vop_time_increment_bits;
+  guint8 fixed_vop_rate;
+  /* if fixed_vop_rate */
+  guint16 fixed_vop_time_increment;
+
+  guint16 width;
+  guint16 height;
+  guint8 interlaced;
+  guint8 obmc_disable;
+
+  GstMpeg4SpriteEnable sprite_enable;
+  /* if vol->sprite_enable == SPRITE_GMG or SPRITE_STATIC*/
+  /* if vol->sprite_enable != GST_MPEG4_SPRITE_GMG */
+  guint16 sprite_width;
+  guint16 sprite_height;
+  guint16 sprite_left_coordinate;
+  guint16 sprite_top_coordinate;
+
+  guint8 no_of_sprite_warping_points;
+  guint8 sprite_warping_accuracy;
+  guint8 sprite_brightness_change;
+  /* if vol->sprite_enable != GST_MPEG4_SPRITE_GMG */
+  guint8 low_latency_sprite_enable;
+
+  /* if shape != GST_MPEG4_RECTANGULAR */
+  guint8 sadct_disable;
+
+  guint8 not_8_bit;
+
+  /* if no_8_bit */
+  guint8 quant_precision;
+  guint8 bits_per_pixel;
+
+  /* if shape == GRAYSCALE */
+  guint8 no_gray_quant_update;
+  guint8 composition_method;
+  guint8 linear_composition;
+
+  guint8 quant_type;
+  /* if quant_type */
+  guint8 load_intra_quant_mat;
+  guint8 intra_quant_mat[64];
+  guint8 load_non_intra_quant_mat;
+  guint8 non_intra_quant_mat[64];
+
+  guint8 quarter_sample;
+  guint8 complexity_estimation_disable;
+  guint8 resync_marker_disable;
+  guint8 data_partitioned;
+  guint8 reversible_vlc;
+  guint8 newpred_enable;
+  guint8 reduced_resolution_vop_enable;
+  guint8 scalability;
+  guint8 enhancement_type;
+
+  //GstMpeg4VideoPlaneShortHdr short_hdr;
+};
+struct _GstMpeg4VisualObject {
+  guint8 is_identifier;
+  /* If is_identifier */
+  guint8 verid;
+  guint8 priority;
+ GstMpeg4VisualObjectType type;
+};
+#endif
 struct _GstQTDemux {
   GstElement element;
 
@@ -77,7 +228,6 @@ struct _GstQTDemux {
 
   guint32 timescale;
   guint64 duration;
-
   gboolean fragmented;
   /* offset of the mfra atom */
   guint64 mfra_offset;
@@ -118,14 +268,49 @@ struct _GstQTDemux {
 
   gboolean upstream_seekable;
   gboolean upstream_size;
-
+#ifdef MULTI_AUDIO
+  GList *Language_list;
+#endif
 #ifdef QTDEMUX_MODIFICATION
+  /*For smooth streaming*/
+  gboolean is_dash;
+  gint64 dash_init_offset;
+  gint video_max_width;
+  gint video_max_height;
+
+  gboolean protection_header_present;
   FILE* file;
   FILE* ofile;
   gchar* filename;
   guint filesize;
   guint maxbuffersize;
   gboolean fwdtrick_mode;
+#ifdef DRM_ENABLE
+  gboolean encrypt_content;
+  DRM_DECRYPT_HANDLE pr_handle;
+  gchar uuid_playready[16];
+  gchar uuid_protection[16];
+#endif
+  gboolean piff_fragmented;
+  GstClockTime max_pop_ts;
+  gboolean playback_protected;
+  gboolean need_parsing_moov;
+  gint iv_size_video;
+  gint iv_size_audio;
+  gchar **iv_data_video;
+  gchar **iv_data_audio;
+  gint sequence_id;
+  gint sample_count[2];
+  gint current_sample[2];
+  gint *sub_sample_count;
+  gint *clear_data;
+  gint *encrypted_data;
+  gboolean dash_content;
+  gint no_of_audio_samples;
+  gint no_of_video_samples;
+  GArray *moof_offsets;
+  gboolean need_moof_parsing;
+  GList *Subtitle_language_list;
 #endif
 };
 

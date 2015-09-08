@@ -181,7 +181,6 @@ gst_v4l2_buffer_new (GstV4l2BufferPool * pool, guint index, GstCaps * caps)
     GST_LOG_OBJECT (pool->v4l2elem, "  MMAP offset:  %u",
         ret->vbuffer.m.offset);
   GST_LOG_OBJECT (pool->v4l2elem, "  length:    %u", ret->vbuffer.length);
-  GST_LOG_OBJECT (pool->v4l2elem, "  input:     %u", ret->vbuffer.input);
 
   data = (guint8 *) v4l2_mmap (0, ret->vbuffer.length,
       PROT_READ | PROT_WRITE, MAP_SHARED, pool->video_fd,

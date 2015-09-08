@@ -202,6 +202,8 @@ static gboolean gst_flac_parse_convert (GstBaseParse * parse,
     GstFormat src_format, gint64 src_value, GstFormat dest_format,
     gint64 * dest_value);
 static GstCaps *gst_flac_parse_get_sink_caps (GstBaseParse * parse);
+static gboolean gst_flac_parse_src_eventfunc (GstBaseParse * parse, GstEvent * event);
+static gboolean gst_flac_parse_do_seek (GstBaseParse * parse, GstPad * pad, GstEvent * event);
 
 GST_BOILERPLATE (GstFlacParse, gst_flac_parse, GstBaseParse,
     GST_TYPE_BASE_PARSE);
@@ -249,12 +251,120 @@ gst_flac_parse_class_init (GstFlacParseClass * klass)
   baseparse_class->convert = GST_DEBUG_FUNCPTR (gst_flac_parse_convert);
   baseparse_class->get_sink_caps =
       GST_DEBUG_FUNCPTR (gst_flac_parse_get_sink_caps);
+  baseparse_class->src_event = GST_DEBUG_FUNCPTR (gst_flac_parse_src_eventfunc);
 }
 
 static void
 gst_flac_parse_init (GstFlacParse * flacparse, GstFlacParseClass * klass)
 {
   flacparse->check_frame_checksums = DEFAULT_CHECK_FRAME_CHECKSUMS;
+}
+
+static gboolean
+gst_flac_parse_src_eventfunc (GstBaseParse * parse, GstEvent * event)
+{
+  GstFlacParse *flacparse = GST_FLAC_PARSE (parse);
+  gboolean handled = FALSE;
+
+  GST_LOG_OBJECT (flacparse, "handling %s event", GST_EVENT_TYPE_NAME (event));
+  switch (GST_EVENT_TYPE (event)) {
+    case GST_EVENT_SEEK:
+    {
+      GstPad* srcpad = gst_element_get_pad(parse, "src");
+      handled = gst_flac_parse_do_seek(parse, srcpad, event);
+      gst_object_unref(srcpad);
+      if(!handled)
+      {
+        handled = GST_BASE_PARSE_CLASS (parent_class)->src_event (parse, event);
+      }
+      break;
+    }
+    default:
+      handled = GST_BASE_PARSE_CLASS (parent_class)->src_event (parse, event);
+      break;
+  }
+  return handled;
+}
+
+static gboolean
+gst_flac_parse_do_seek (GstBaseParse * parse, GstPad * pad, GstEvent * event)
+{
+  GstFlacParse *flacparse = GST_FLAC_PARSE (parse);
+
+  gdouble rate;
+  GstFormat format;
+  GstSeekFlags flags;
+  GstSeekType cur_type, stop_type;
+  gint64 cur, stop;
+  gboolean res = FALSE;
+
+  gint64 total_file_size = 0, start_offset = 0;
+  gint64 duration = 0;
+  gint64 seeked_time = 0;
+
+  gint64 estimate_sample = 0;
+  gint64 estimate_byte = 0;
+  GstClockTime current_ts = GST_CLOCK_TIME_NONE;
+
+
+  gst_event_parse_seek (event, &rate, &format, &flags, &cur_type, &cur, &stop_type, &stop);
+
+  if (rate <= 0)
+    goto unsupported_seek;
+
+  cur_type = GST_SEEK_TYPE_SET;
+  stop_type = GST_SEEK_TYPE_NONE;
+  stop = -1;
+  flags |= GST_SEEK_FLAG_FLUSH;
+
+  gst_base_parse_get_upstream_size(parse, &total_file_size);
+  gst_base_parse_get_index_last_ts(parse, &current_ts);
+
+  if (cur <= current_ts) {
+    GST_INFO("seek to %"GST_TIME_FORMAT" within index table %"GST_TIME_FORMAT". do not make index table", GST_TIME_ARGS(cur), GST_TIME_ARGS(current_ts));
+    return res;
+  } else {
+    GST_INFO("seek to %"GST_TIME_FORMAT" without index table %"GST_TIME_FORMAT". make index table", GST_TIME_ARGS(cur), GST_TIME_ARGS(current_ts));
+  }
+  duration = flacparse->total_samples / flacparse->samplerate;
+  seeked_time = GST_TIME_AS_SECONDS(cur);
+
+  estimate_byte = (seeked_time * total_file_size) / duration;
+  GST_DEBUG_OBJECT(flacparse, "Initial estimate position %"G_GINT64_FORMAT, estimate_byte);
+  while(1)
+  {
+    GstBuffer* buffer = NULL;
+    const guint8 * data;
+    res = gst_pad_pull_range (parse->sinkpad, estimate_byte, flacparse->max_framesize, &buffer);
+    if (res != GST_FLOW_OK) {
+      GST_ERROR ("gst_pad_pull_range failed!");
+      break;
+    }
+    GstByteReader reader = GST_BYTE_READER_INIT_FROM_BUFFER (buffer);
+    gint off = 0;
+    off = gst_byte_reader_masked_scan_uint32 (&reader, 0xfffc0000, 0xfff80000, 0, GST_BUFFER_SIZE (buffer));
+    if (off > 0) {
+      GST_DEBUG_OBJECT (parse, "Possible sync at buffer offset %d", off);
+      estimate_byte += off;
+      gst_base_parse_add_index_entry (parse, estimate_byte, cur, TRUE, TRUE);
+      gst_buffer_unref (buffer);
+      break;
+    } else {
+      GST_DEBUG_OBJECT (flacparse, "Sync code not found");
+      estimate_byte += (GST_BUFFER_SIZE (buffer) - 3);
+      gst_buffer_unref (buffer);
+      continue;
+    }
+  }
+estimate:
+  GST_DEBUG_OBJECT(flacparse, "seeking to offset %"G_GINT64_FORMAT, estimate_byte);
+  return FALSE;
+
+unsupported_seek:
+  {
+    GST_DEBUG_OBJECT (flacparse, "unsupported seek, seek aborted.");
+    return FALSE;
+  }
 }
 
 static void
@@ -1254,6 +1364,7 @@ gst_flac_parse_parse_frame (GstBaseParse * parse, GstBaseParseFrame * frame)
   } else if (flacparse->state == GST_FLAC_PARSE_STATE_HEADERS) {
     gboolean is_last = ((data[0] & 0x80) == 0x80);
     guint type = (data[0] & 0x7F);
+    gboolean hdr_ok = TRUE;
 
     if (type == 127) {
       GST_WARNING_OBJECT (flacparse, "Invalid metadata block type");
@@ -1264,20 +1375,16 @@ gst_flac_parse_parse_frame (GstBaseParse * parse, GstBaseParseFrame * frame)
 
     switch (type) {
       case 0:                  /* STREAMINFO */
-        if (!gst_flac_parse_handle_streaminfo (flacparse, buffer))
-          return GST_FLOW_ERROR;
+        hdr_ok = gst_flac_parse_handle_streaminfo (flacparse, buffer);
         break;
       case 3:                  /* SEEKTABLE */
-        if (!gst_flac_parse_handle_seektable (flacparse, buffer))
-          return GST_FLOW_ERROR;
+        hdr_ok = gst_flac_parse_handle_seektable (flacparse, buffer);
         break;
       case 4:                  /* VORBIS_COMMENT */
-        if (!gst_flac_parse_handle_vorbiscomment (flacparse, buffer))
-          return GST_FLOW_ERROR;
+        hdr_ok = gst_flac_parse_handle_vorbiscomment (flacparse, buffer);
         break;
       case 6:                  /* PICTURE */
-        if (!gst_flac_parse_handle_picture (flacparse, buffer))
-          return GST_FLOW_ERROR;
+        hdr_ok = gst_flac_parse_handle_picture (flacparse, buffer);
         break;
       case 1:                  /* PADDING */
       case 2:                  /* APPLICATION */
@@ -1286,13 +1393,26 @@ gst_flac_parse_parse_frame (GstBaseParse * parse, GstBaseParseFrame * frame)
         break;
     }
 
-    GST_BUFFER_TIMESTAMP (buffer) = GST_CLOCK_TIME_NONE;
-    GST_BUFFER_DURATION (buffer) = GST_CLOCK_TIME_NONE;
-    GST_BUFFER_OFFSET (buffer) = 0;
-    GST_BUFFER_OFFSET_END (buffer) = 0;
+    if (hdr_ok) {
+      GST_BUFFER_TIMESTAMP (buffer) = GST_CLOCK_TIME_NONE;
+      GST_BUFFER_DURATION (buffer) = GST_CLOCK_TIME_NONE;
+      GST_BUFFER_OFFSET (buffer) = 0;
+      GST_BUFFER_OFFSET_END (buffer) = 0;
 
-    flacparse->headers =
-        g_list_append (flacparse->headers, gst_buffer_ref (buffer));
+      if(type != 6) {
+        flacparse->headers =
+            g_list_append (flacparse->headers, gst_buffer_ref (buffer));
+      }
+    } else {
+      GST_WARNING_OBJECT (flacparse, "failed to parse header of type %u", type);
+
+      /* error out unless we have a STREAMINFO header */
+      if (flacparse->samplerate == 0 || flacparse->bps == 0)
+        return GST_FLOW_ERROR;
+
+      /* .. in which case just stop header parsing and try to find audio */
+      is_last = TRUE;
+    }
 
     if (is_last) {
       if (!gst_flac_parse_handle_headers (flacparse))

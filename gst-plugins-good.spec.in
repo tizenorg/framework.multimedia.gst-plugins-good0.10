@@ -27,7 +27,7 @@ BuildRequires:  gcc-c++
 @USE_ESD_TRUE@Provides:		gstreamer-audiosink
 @USE_FLAC_TRUE@BuildRequires: flac-devel >= 1.0.3
 @USE_GCONF_TRUE@BuildRequires: 	GConf2-devel
-@USE_JPEG_TRUE@BuildRequires: libjpeg-devel
+@USE_JPEG_TRUE@BuildRequires: libjpeg-turbo-devel
 @USE_LIBCACA_TRUE@BuildRequires: libcaca-devel
 @USE_LIBDV_TRUE@BuildRequires: libdv-devel
 @USE_LIBPNG_TRUE@BuildRequires: libpng-devel >= 1.2.0

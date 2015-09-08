@@ -48,6 +48,7 @@ struct _GstRTPMP2TPay
   GstAdapter  *adapter;
   GstClockTime first_ts;
   GstClockTime duration;
+  gboolean rtp_flush;
 };
 
 struct _GstRTPMP2TPayClass

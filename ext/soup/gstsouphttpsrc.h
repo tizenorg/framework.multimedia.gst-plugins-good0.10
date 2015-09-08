@@ -9,7 +9,7 @@
  * This library is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
- * Library General Public License for more 
+ * Library General Public License for more
  */
 
 #ifndef __GST_SOUP_HTTP_SRC_H__
@@ -34,9 +34,13 @@ G_BEGIN_DECLS
   (G_TYPE_CHECK_INSTANCE_TYPE((obj),GST_TYPE_SOUP_HTTP_SRC))
 #define GST_IS_SOUP_HTTP_SRC_CLASS(klass) \
   (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_SOUP_HTTP_SRC))
+#define	USE_SAMSUNG_LINK
 
 typedef struct _GstSoupHTTPSrc GstSoupHTTPSrc;
 typedef struct _GstSoupHTTPSrcClass GstSoupHTTPSrcClass;
+#ifdef GST_EXT_SOUP_MODIFICATION
+typedef struct _GstSoupHTTPSrcRequestRange GstSoupHTTPSrcRequestRange;
+#endif
 
 typedef enum {
   GST_SOUP_HTTP_SRC_SESSION_IO_STATUS_IDLE,
@@ -68,6 +72,10 @@ struct _GstSoupHTTPSrc {
   gboolean interrupted;        /* Signal unlock(). */
   gboolean retry;              /* Should attempt to reconnect. */
 
+#ifdef GST_EXT_SOUP_MODIFICATION
+  guint op_code;               /* DLNA server seek setting */
+#endif
+
   gboolean have_size;          /* Received and parsed Content-Length
                                   header. */
   guint64 file_size;
@@ -78,6 +86,11 @@ struct _GstSoupHTTPSrc {
                                   Range. */
   guint64 request_position;    /* Seek to this position. */
   gboolean seeked;
+  gboolean have_body;          /* Indicates if it has just been signaled the
+                                * end of the message body. This is used to
+                                * decide if an out of range request should be
+                                * handled as an error or EOS when the content
+                                * size is unknown */
 
   /* Shoutcast/icecast metadata extraction handling. */
   gboolean iradio_mode;
@@ -89,10 +102,27 @@ struct _GstSoupHTTPSrc {
 
   GstStructure *extra_headers;
 
-  guint timeout;
 #ifdef GST_EXT_SOUP_MODIFICATION
   SoupCookieJar *cookie_jar;
+  guint64 content_len;
+  gboolean is_ahs_streaming; /* adaptive HTTP Streaming : HLS/SS/DASH */
+  gchar *videohub_dash_uri;/* includes custom data */
+  GSList *cookie_list;
+
+  gint timeout;
+  guint session_timeout;
+  GstClockTime retry_timestamp;
+
+  GstClockTime duration;
+#else
+  guint timeout;
 #endif
+
+#ifdef USE_SAMSUNG_LINK
+  gint64 seek_time_position;
+  gboolean is_x_asp;
+#endif
+
 };
 
 struct _GstSoupHTTPSrcClass {

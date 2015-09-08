@@ -141,6 +141,7 @@ typedef struct {
   GstTagList	*taglist;
 
   gint           index_id;
+  gboolean       sent_eos;
 } GstAviStream;
 
 typedef enum {
@@ -209,6 +210,9 @@ typedef struct _GstAviDemux {
   GstIndex      *element_index;
   gint           index_id;
   gboolean       seekable;
+
+  //playback protection
+  gboolean       playback_protected;
 
 #ifdef DIVX_DRM
   uint8_t* drmContext;

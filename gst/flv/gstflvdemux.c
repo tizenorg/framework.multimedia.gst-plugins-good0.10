@@ -811,6 +811,11 @@ gst_flv_demux_parse_tag_audio (GstFlvDemux * demux, GstBuffer * buffer)
   /* Combine them */
   pts |= pts_ext << 24;
 
+  if((pts * GST_MSECOND) < demux->segment.last_stop)
+  {
+    return GST_FLOW_OK;
+  }
+
   GST_LOG_OBJECT (demux, "pts bytes %02X %02X %02X %02X (%d)", data[0], data[1],
       data[2], data[3], pts);
 
@@ -1368,9 +1373,6 @@ gst_flv_demux_parse_tag_video (GstFlvDemux * demux, GstBuffer * buffer)
     GST_BUFFER_FLAG_SET (outbuf, GST_BUFFER_FLAG_DISCONT);
     demux->video_need_discont = FALSE;
   }
-
-  gst_segment_set_last_stop (&demux->segment, GST_FORMAT_TIME,
-      GST_BUFFER_TIMESTAMP (outbuf));
 
   /* Do we need a newsegment event ? */
   if (G_UNLIKELY (demux->video_need_segment)) {
@@ -2007,7 +2009,7 @@ gst_flv_demux_pull_range (GstFlvDemux * demux, GstPad * pad, guint64 offset,
         "partial pull got %d when expecting %d from offset %" G_GUINT64_FORMAT,
         GST_BUFFER_SIZE (*buffer), size, offset);
     gst_buffer_unref (*buffer);
-    ret = GST_FLOW_UNEXPECTED;
+    ret = GST_FLOW_NOT_SUPPORTED;
     *buffer = NULL;
     return ret;
   }
@@ -2248,7 +2250,7 @@ exit:
 static gint64
 gst_flv_demux_get_metadata (GstFlvDemux * demux)
 {
-  gint64 ret = 0, offset;
+  gint64 ret = 0, offset = 0;
   GstFormat fmt = GST_FORMAT_BYTES;
   size_t tag_size, size;
   GstBuffer *buffer = NULL;
@@ -2456,12 +2458,14 @@ gst_flv_demux_find_offset (GstFlvDemux * demux, GstSegment * segment)
           GST_TIME_ARGS (segment->last_stop), GST_TIME_ARGS (time), bytes);
 
       /* Key frame seeking */
-      if (segment->flags & GST_SEEK_FLAG_KEY_UNIT) {
+#ifndef FLVDEMUX_MODIFICATION
+      if (segment->flags & GST_SEEK_FLAG_KEY_UNIT)
+#endif
+      {
         /* Adjust the segment so that the keyframe fits in */
         if (time < segment->start) {
           segment->start = segment->time = time;
         }
-        segment->last_stop = time;
       }
     } else {
       GST_DEBUG_OBJECT (demux, "no index entry found for %" GST_TIME_FORMAT,

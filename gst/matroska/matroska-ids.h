@@ -630,6 +630,12 @@ typedef struct _GstMatroskaTrackEncoding {
   guint   comp_settings_length;
 } GstMatroskaTrackEncoding;
 
+typedef struct _GstMatroskaLanguageStruct {
+  gchar* language_code;
+  gchar* language_key;
+  gboolean active;
+} GstMatroskaLanguageStruct;
+
 gboolean gst_matroska_track_init_video_context    (GstMatroskaTrackContext ** p_context);
 gboolean gst_matroska_track_init_audio_context    (GstMatroskaTrackContext ** p_context);
 gboolean gst_matroska_track_init_subtitle_context (GstMatroskaTrackContext ** p_context);

@@ -536,6 +536,10 @@ gst_rtspsrc_init (GstRTSPSrc * src, GstRTSPSrcClass * g_class)
   src->udp_buffer_size = DEFAULT_UDP_BUFFER_SIZE;
   src->short_header = DEFAULT_SHORT_HEADER;
 
+#ifdef GST_EXT_RTSPSRC_MODIFICATION
+  src->wait_pause_response = FALSE;
+#endif
+
   /* get a list of all extensions */
   src->extensions = gst_rtsp_ext_list_get ();
 
@@ -4499,6 +4503,11 @@ again:
 
   gst_rtsp_connection_reset_timeout (conn);
 
+#ifdef GST_EXT_RTSPSRC_MODIFICATION
+  if(request->type_data.request.method == GST_RTSP_PAUSE)
+    src->wait_pause_response = TRUE;
+#endif
+
 next:
   res = gst_rtspsrc_connection_receive (src, conn, response, src->ptcp_timeout);
   if (res < 0)
@@ -4506,6 +4515,15 @@ next:
 
   if (src->debug)
     gst_rtsp_message_dump (response);
+
+#ifdef GST_EXT_RTSPSRC_MODIFICATION
+  if(request->type_data.request.method != GST_RTSP_PAUSE && src->wait_pause_response) {
+    GST_DEBUG_OBJECT(src, "ignoring PAUSE response message");
+    src->wait_pause_response = FALSE;
+    goto next;
+  }
+#endif
+
 
   switch (response->type) {
     case GST_RTSP_MESSAGE_REQUEST:
@@ -4532,6 +4550,11 @@ next:
   thecode = response->type_data.response.code;
 
   GST_DEBUG_OBJECT (src, "got response message %d", thecode);
+
+#ifdef GST_EXT_RTSPSRC_MODIFICATION
+  if(request->type_data.request.method == GST_RTSP_PAUSE)
+    src->wait_pause_response = FALSE;
+#endif
 
   /* if the caller wanted the result code, we store it. */
   if (code)
@@ -4571,7 +4594,11 @@ receive_error:
     switch (res) {
       case GST_RTSP_EEOF:
         GST_WARNING_OBJECT (src, "server closed connection, doing reconnect");
-        if (try == 0) {
+#ifdef GST_EXT_RTSPSRC_MODIFICATION
+        if(request->type_data.request.method == GST_RTSP_PAUSE)
+          src->wait_pause_response = FALSE;
+#endif
+       if (try == 0) {
           try++;
           /* if reconnect succeeds, try again */
           if ((res =
@@ -6093,8 +6120,15 @@ gst_rtspsrc_play (GstRTSPSrc * src, GstSegment * segment, gboolean async)
   if (!(src->methods & GST_RTSP_PLAY))
     goto not_supported;
 
+#ifdef GST_EXT_RTSPSRC_MODIFICATION
+  if (src->state == GST_RTSP_STATE_PLAYING) {
+    if(src->wait_pause_response == FALSE)
+      goto was_playing;
+  }
+#else
   if (src->state == GST_RTSP_STATE_PLAYING)
     goto was_playing;
+#endif
 
   if (!src->conninfo.connection || !src->conninfo.connected)
     goto done;

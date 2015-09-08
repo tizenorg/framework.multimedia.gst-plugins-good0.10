@@ -1,7 +1,7 @@
 
 plugin_LTLIBRARIES = libgstisomp4.la
 
-libgstisomp4_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) $(GST_CFLAGS)
+libgstisomp4_la_CFLAGS = $(GST_PLUGINS_BASE_CFLAGS) $(GST_BASE_CFLAGS) $(GST_CFLAGS) $(DRM_CLIENT_CFLAGS) $(DRM_TRUSTED_CFLAGS)
 libgstisomp4_la_LIBADD = \
     $(GST_PLUGINS_BASE_LIBS) \
     -lgstriff-@GST_MAJORMINOR@ \
@@ -9,7 +9,7 @@ libgstisomp4_la_LIBADD = \
     -lgstrtp-@GST_MAJORMINOR@ \
     -lgsttag-@GST_MAJORMINOR@ \
     -lgstpbutils-@GST_MAJORMINOR@ \
-    $(GST_BASE_LIBS) $(GST_LIBS) $(ZLIB_LIBS)
+    $(GST_BASE_LIBS) $(GST_LIBS) $(ZLIB_LIBS)  $(DRM_CLIENT_LIBS) $(DRM_TRUSTED_LIBS)
 libgstisomp4_la_LDFLAGS = ${GST_PLUGIN_LDFLAGS}
 libgstisomp4_la_SOURCES = isomp4-plugin.c gstrtpxqtdepay.c \
 	qtdemux.c qtdemux_types.c qtdemux_dump.c qtdemux_lang.c \

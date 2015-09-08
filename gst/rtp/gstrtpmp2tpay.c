@@ -27,6 +27,13 @@
 
 #include "gstrtpmp2tpay.h"
 
+#define DEFAULT_RTP_FLUSH           FALSE
+
+enum {
+  PROP_0,
+  PROP_RTP_FLUSH
+};
+
 static GstStaticPadTemplate gst_rtp_mp2t_pay_sink_template =
 GST_STATIC_PAD_TEMPLATE ("sink",
     GST_PAD_SINK,
@@ -45,6 +52,10 @@ GST_STATIC_PAD_TEMPLATE ("src",
         "clock-rate = (int) 90000, " "encoding-name = (string) \"MP2T-ES\"")
     );
 
+static void gst_rtp_mp2t_pay_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec);
+static void gst_rtp_mp2t_pay_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec);
 static gboolean gst_rtp_mp2t_pay_setcaps (GstBaseRTPPayload * payload,
     GstCaps * caps);
 static GstFlowReturn gst_rtp_mp2t_pay_handle_buffer (GstBaseRTPPayload *
@@ -83,6 +94,18 @@ gst_rtp_mp2t_pay_class_init (GstRTPMP2TPayClass * klass)
 
   gstbasertppayload_class->set_caps = gst_rtp_mp2t_pay_setcaps;
   gstbasertppayload_class->handle_buffer = gst_rtp_mp2t_pay_handle_buffer;
+
+  gobject_class->set_property = gst_rtp_mp2t_pay_set_property;
+  gobject_class->get_property = gst_rtp_mp2t_pay_get_property;
+  /* GstRTPMP2TPay: rtp-flush
+   * Try to use this option to flush rtp packet if adaptation field is present
+   * in mpeg2-ts packet. If this option is disabled then packet will be flushed
+   * based on MTU of RTP packet.*/
+
+  g_object_class_install_property (G_OBJECT_CLASS (klass), PROP_RTP_FLUSH,
+        g_param_spec_boolean ("rtp-flush", "RTP-FLUSH",
+            "Flush RTP packet when adaptation field is present in MP2TS packet",
+            DEFAULT_RTP_FLUSH, G_PARAM_READWRITE));
 }
 
 static void
@@ -92,6 +115,7 @@ gst_rtp_mp2t_pay_init (GstRTPMP2TPay * rtpmp2tpay, GstRTPMP2TPayClass * klass)
   GST_BASE_RTP_PAYLOAD_PT (rtpmp2tpay) = GST_RTP_PAYLOAD_MP2T;
 
   rtpmp2tpay->adapter = gst_adapter_new ();
+  rtpmp2tpay->rtp_flush = DEFAULT_RTP_FLUSH;
 }
 
 static void
@@ -105,6 +129,38 @@ gst_rtp_mp2t_pay_finalize (GObject * object)
   rtpmp2tpay->adapter = NULL;
 
   G_OBJECT_CLASS (parent_class)->finalize (object);
+}
+
+static void gst_rtp_mp2t_pay_set_property (GObject * object, guint prop_id,
+    const GValue * value, GParamSpec * pspec) {
+  GstRTPMP2TPay *rtpmp2tpay;
+
+  rtpmp2tpay = GST_RTP_MP2T_PAY (object);
+
+  switch (prop_id) {
+    case PROP_RTP_FLUSH:
+      rtpmp2tpay->rtp_flush = g_value_get_boolean (value);
+      break;
+    default :
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
+}
+
+static void gst_rtp_mp2t_pay_get_property (GObject * object, guint prop_id,
+    GValue * value, GParamSpec * pspec) {
+  GstRTPMP2TPay *rtpmp2tpay;
+
+  rtpmp2tpay = GST_RTP_MP2T_PAY (object);
+
+  switch (prop_id) {
+    case PROP_RTP_FLUSH:
+      g_value_set_boolean (value, rtpmp2tpay->rtp_flush);
+      break;
+    default:
+      G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+      break;
+  }
 }
 
 static gboolean
@@ -159,13 +215,14 @@ gst_rtp_mp2t_pay_handle_buffer (GstBaseRTPPayload * basepayload,
   guint size, avail, packet_len;
   GstClockTime timestamp, duration;
   GstFlowReturn ret;
-
+  guint8 *outbuf = NULL;
+  gboolean check_flush = FALSE;
   rtpmp2tpay = GST_RTP_MP2T_PAY (basepayload);
 
   size = GST_BUFFER_SIZE (buffer);
   timestamp = GST_BUFFER_TIMESTAMP (buffer);
   duration = GST_BUFFER_DURATION (buffer);
-
+  outbuf = GST_BUFFER_DATA(buffer);
   ret = GST_FLOW_OK;
   avail = gst_adapter_available (rtpmp2tpay->adapter);
 
@@ -182,7 +239,9 @@ gst_rtp_mp2t_pay_handle_buffer (GstBaseRTPPayload * basepayload,
   /* if this buffer is going to overflow the packet, flush what we
    * have. */
   if (gst_basertppayload_is_filled (basepayload,
-          packet_len, rtpmp2tpay->duration + duration)) {
+          packet_len, rtpmp2tpay->duration + duration) ) {
+          GST_DEBUG ("**frame has been flushed and size of frame is %d", packet_len);
+    check_flush = TRUE;
     ret = gst_rtp_mp2t_pay_flush (rtpmp2tpay);
     rtpmp2tpay->first_ts = timestamp;
     rtpmp2tpay->duration = duration;
@@ -196,6 +255,12 @@ gst_rtp_mp2t_pay_handle_buffer (GstBaseRTPPayload * basepayload,
   /* copy buffer to adapter */
   gst_adapter_push (rtpmp2tpay->adapter, buffer);
 
+  /* If last MP2TSmux packet has adaptation field then flush the RTP packet. */
+  if((rtpmp2tpay->rtp_flush == TRUE) && (outbuf[3] & 0x20) && (check_flush == FALSE)) {
+    ret = gst_rtp_mp2t_pay_flush (rtpmp2tpay);
+    rtpmp2tpay->first_ts = timestamp;
+    rtpmp2tpay->duration = duration;
+  }
   return ret;
 
 }
